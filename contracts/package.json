@@ -1,0 +1,23 @@
+{
+  "name": "shadowpool-contracts",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:local": "hardhat run scripts/deploy.ts --network hardhat",
+    "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.24.0",
+    "typescript": "^5.8.3",
+    "ts-node": "^10.9.2"
+  },
+  "dependencies": {
+    "@fhevm/solidity": "^0.11.1",
+    "fhevm-contracts": "^0.2.4",
+    "@openzeppelin/confidential-contracts": "^0.4.0",
+    "dotenv": "^16.6.1"
+  }
+}

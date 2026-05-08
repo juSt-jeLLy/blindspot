@@ -30,3 +30,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# contracts build outputs
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+contracts/.env
