@@ -9,8 +9,20 @@ describe("DarkPoolFactory", function () {
     const weth = await Token.deploy("Wrapped ETH", "WETH", 18);
     const usdt = await Token.deploy("Tether USD", "USDT", 6);
 
+    const WrapperDeployer = await ethers.getContractFactory("DarkPoolWrapperDeployer");
+    const wrapperDeployer = await WrapperDeployer.deploy(await deployer.getAddress());
+    const PairDeployer = await ethers.getContractFactory("DarkPoolPairDeployer");
+    const pairDeployer = await PairDeployer.deploy(await deployer.getAddress());
+
     const Factory = await ethers.getContractFactory("DarkPoolFactory");
-    const factory = await Factory.deploy(await gateway.getAddress());
+    const factory = await Factory.deploy(
+      await deployer.getAddress(),
+      await gateway.getAddress(),
+      await wrapperDeployer.getAddress(),
+      await pairDeployer.getAddress()
+    );
+    await (await wrapperDeployer.transferOwnership(await factory.getAddress())).wait();
+    await (await pairDeployer.transferOwnership(await factory.getAddress())).wait();
 
     const tx = await factory.createPair(
       await weth.getAddress(),

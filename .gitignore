@@ -36,3 +36,4 @@ contracts/artifacts/
 contracts/cache/
 contracts/typechain-types/
 contracts/.env
+contracts/fhevmTemp/

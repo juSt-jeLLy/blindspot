@@ -21,7 +21,6 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
     IConfidentialERC20Minimal public immutable cTokenA;
     IConfidentialERC20Minimal public immutable cTokenB;
     IDarkPoolMatcher public matcher;
-    bool public immutable testingMode;
 
     uint256 public nextOrderId = 1;
     bool public matchInFlight;
@@ -44,12 +43,11 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         _;
     }
 
-    constructor(address _cTokenA, address _cTokenB, address _matcher, bool _testingMode) {
+    constructor(address _cTokenA, address _cTokenB, address _matcher) {
         require(_cTokenA != address(0) && _cTokenB != address(0) && _matcher != address(0), "zero address");
         cTokenA = IConfidentialERC20Minimal(_cTokenA);
         cTokenB = IConfidentialERC20Minimal(_cTokenB);
         matcher = IDarkPoolMatcher(_matcher);
-        testingMode = _testingMode;
     }
 
     function setMatcher(address _matcher) external {
@@ -100,13 +98,6 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         orderId = _submitSellOrder(msg.sender, minPrice, sellSize, true);
     }
 
-    function submitSellOrderTest(uint64 minPriceClear, uint64 sellSizeClear) external returns (uint256 orderId) {
-        require(testingMode, "testing disabled");
-        euint64 minPrice = euint64.wrap(bytes32(uint256(minPriceClear)));
-        euint64 sellSize = euint64.wrap(bytes32(uint256(sellSizeClear)));
-        orderId = _submitSellOrder(msg.sender, minPrice, sellSize, false);
-    }
-
     function submitBuyOrder(
         externalEuint64 encBidPrice,
         bytes calldata priceProof,
@@ -116,13 +107,6 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         euint64 bidPrice = FHE.fromExternal(encBidPrice, priceProof);
         euint64 buySize = FHE.fromExternal(encBuySize, sizeProof);
         orderId = _submitBuyOrder(msg.sender, bidPrice, buySize, true);
-    }
-
-    function submitBuyOrderTest(uint64 bidPriceClear, uint64 buySizeClear) external returns (uint256 orderId) {
-        require(testingMode, "testing disabled");
-        euint64 bidPrice = euint64.wrap(bytes32(uint256(bidPriceClear)));
-        euint64 buySize = euint64.wrap(bytes32(uint256(buySizeClear)));
-        orderId = _submitBuyOrder(msg.sender, bidPrice, buySize, false);
     }
 
     function cancelOrder(uint256 orderId) external {
@@ -148,18 +132,6 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         require(activeSellOrderId() == sellOrderId && activeBuyOrderId() == buyOrderId, "not queue head");
         orders[sellOrderId].status = OrderStatus.Filled;
         orders[buyOrderId].status = OrderStatus.Filled;
-        sellHead++;
-        buyHead++;
-    }
-
-    function noMatchBoth(uint256 sellOrderId, uint256 buyOrderId) external onlyMatcher {
-        require(activeSellOrderId() == sellOrderId && activeBuyOrderId() == buyOrderId, "not queue head");
-        orders[sellOrderId].status = OrderStatus.Refunded;
-        orders[buyOrderId].status = OrderStatus.Refunded;
-
-        cTokenA.confidentialTransfer(orders[sellOrderId].trader, orders[sellOrderId].encSize);
-        cTokenB.confidentialTransfer(orders[buyOrderId].trader, orders[buyOrderId].encSize);
-
         sellHead++;
         buyHead++;
     }
@@ -194,10 +166,6 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         _sellQueue[sellHead] = newSellOrderId;
         buyHead++;
 
-        if (!testingMode) {
-            FHE.allowThis(sellRemainder);
-        }
-
         emit RemainderRequeued(sellOrderId, newSellOrderId);
     }
 
@@ -231,29 +199,7 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         _buyQueue[buyHead] = newBuyOrderId;
         sellHead++;
 
-        if (!testingMode) {
-            FHE.allowThis(buyRemainder);
-        }
-
         emit RemainderRequeued(buyOrderId, newBuyOrderId);
-    }
-
-    function fillBuyRequeueSellClear(uint256 sellOrderId, uint256 buyOrderId, uint64 sellRemainderClear)
-        external
-        onlyMatcher
-        returns (uint256)
-    {
-        require(testingMode, "testing disabled");
-        return _fillBuyRequeueSell(sellOrderId, buyOrderId, euint64.wrap(bytes32(uint256(sellRemainderClear))));
-    }
-
-    function fillSellRequeueBuyClear(uint256 sellOrderId, uint256 buyOrderId, uint64 buyRemainderClear)
-        external
-        onlyMatcher
-        returns (uint256)
-    {
-        require(testingMode, "testing disabled");
-        return _fillSellRequeueBuy(sellOrderId, buyOrderId, euint64.wrap(bytes32(uint256(buyRemainderClear))));
     }
 
     function releaseMatchLockAndTryNext() external onlyMatcher {
@@ -292,10 +238,10 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         });
         _sellQueue.push(orderId);
 
-        if (!testingMode) {
-            FHE.allowThis(minPrice);
-            FHE.allowThis(sellSize);
-        }
+        FHE.allowThis(minPrice);
+        FHE.allowThis(sellSize);
+        FHE.allow(minPrice, address(matcher));
+        FHE.allow(sellSize, address(matcher));
 
         if (transferIn) {
             cTokenA.confidentialTransferFrom(trader, address(this), sellSize);
@@ -321,10 +267,10 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         });
         _buyQueue.push(orderId);
 
-        if (!testingMode) {
-            FHE.allowThis(bidPrice);
-            FHE.allowThis(buySize);
-        }
+        FHE.allowThis(bidPrice);
+        FHE.allowThis(buySize);
+        FHE.allow(bidPrice, address(matcher));
+        FHE.allow(buySize, address(matcher));
 
         if (transferIn) {
             cTokenB.confidentialTransferFrom(trader, address(this), buySize);

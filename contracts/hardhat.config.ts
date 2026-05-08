@@ -4,6 +4,10 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
+if (process.env.ENABLE_FHEVM_PLUGIN === "1") {
+  require("@fhevm/hardhat-plugin");
+}
+
 const config: HardhatUserConfig = {
   networks: {
     hardhat: {

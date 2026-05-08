@@ -4,20 +4,24 @@
   "version": "1.0.0",
   "scripts": {
     "build": "hardhat compile",
-    "test": "hardhat test",
+    "test": "ENABLE_FHEVM_PLUGIN=1 hardhat test",
     "deploy:local": "hardhat run scripts/deploy.ts --network hardhat",
     "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia"
   },
   "devDependencies": {
+    "@fhevm/hardhat-plugin": "^0.4.2",
+    "@fhevm/mock-utils": "^0.4.2",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@zama-fhe/oracle-solidity": "^0.2.0",
+    "@zama-fhe/relayer-sdk": "^0.4.1",
     "hardhat": "^2.24.0",
-    "typescript": "^5.8.3",
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
   },
   "dependencies": {
     "@fhevm/solidity": "^0.11.1",
-    "fhevm-contracts": "^0.2.4",
     "@openzeppelin/confidential-contracts": "^0.4.0",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "fhevm-contracts": "^0.2.4"
   }
 }

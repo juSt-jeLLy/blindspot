@@ -69,10 +69,10 @@ async function main() {
     const settlement = await Settlement.deploy(wrappers[a], wrappers[b]);
     await settlement.waitForDeployment();
 
-    const matcher = await Matcher.deploy(await settlement.getAddress(), gatewayAddress, false);
+    const matcher = await Matcher.deploy(await settlement.getAddress(), gatewayAddress);
     await matcher.waitForDeployment();
 
-    const escrow = await Escrow.deploy(wrappers[a], wrappers[b], await matcher.getAddress(), false);
+    const escrow = await Escrow.deploy(wrappers[a], wrappers[b], await matcher.getAddress());
     await escrow.waitForDeployment();
 
     await (await matcher.setEscrow(await escrow.getAddress())).wait();
