@@ -1,33 +1,36 @@
 import { ethers } from "hardhat";
 
 async function main() {
+  const owner = process.env.OWNER_ADDRESS;
   const gatewayAddress = process.env.GATEWAY_ADDRESS;
-  const tokenA = process.env.TOKEN_A;
-  const tokenB = process.env.TOKEN_B;
-  const nameA = process.env.CTOKEN_A_NAME ?? "Confidential Token A";
-  const symbolA = process.env.CTOKEN_A_SYMBOL ?? "cTKNA";
-  const nameB = process.env.CTOKEN_B_NAME ?? "Confidential Token B";
-  const symbolB = process.env.CTOKEN_B_SYMBOL ?? "cTKNB";
 
-  if (!gatewayAddress || !tokenA || !tokenB) {
-    throw new Error("Set GATEWAY_ADDRESS, TOKEN_A, TOKEN_B in env");
+  if (!owner || !gatewayAddress) {
+    throw new Error("Set OWNER_ADDRESS and GATEWAY_ADDRESS in env");
   }
 
+  const WrapperDeployer = await ethers.getContractFactory("DarkPoolWrapperDeployer");
+  const wrapperDeployer = await WrapperDeployer.deploy(owner);
+  await wrapperDeployer.waitForDeployment();
+
+  const PairDeployer = await ethers.getContractFactory("DarkPoolPairDeployer");
+  const pairDeployer = await PairDeployer.deploy(owner);
+  await pairDeployer.waitForDeployment();
+
   const Factory = await ethers.getContractFactory("DarkPoolFactory");
-  const factory = await Factory.deploy(gatewayAddress);
+  const factory = await Factory.deploy(
+    owner,
+    gatewayAddress,
+    await wrapperDeployer.getAddress(),
+    await pairDeployer.getAddress()
+  );
   await factory.waitForDeployment();
 
+  await (await wrapperDeployer.transferOwnership(await factory.getAddress())).wait();
+  await (await pairDeployer.transferOwnership(await factory.getAddress())).wait();
+
+  console.log("WrapperDeployer:", await wrapperDeployer.getAddress());
+  console.log("PairDeployer:", await pairDeployer.getAddress());
   console.log("DarkPoolFactory:", await factory.getAddress());
-
-  const tx = await factory.createPair(tokenA, tokenB, nameA, symbolA, nameB, symbolB);
-  await tx.wait();
-
-  const pair = await factory.getPair(tokenA, tokenB);
-  console.log("Pair escrow:", pair.escrow);
-  console.log("Pair matcher:", pair.matcher);
-  console.log("Pair settlement:", pair.settlement);
-  console.log("Pair cTokenA:", pair.cTokenA);
-  console.log("Pair cTokenB:", pair.cTokenB);
 }
 
 main().catch((err) => {
