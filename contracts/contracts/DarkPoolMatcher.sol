@@ -9,11 +9,8 @@ import { Order } from "./DarkPoolTypes.sol";
 interface IDarkPoolEscrowMatcherSide {
     function consumeHeadOrders() external view returns (Order memory sellOrder, Order memory buyOrder);
     function fillBoth(uint256 sellOrderId, uint256 buyOrderId) external;
-    function noMatchBoth(uint256 sellOrderId, uint256 buyOrderId) external;
     function fillBuyRequeueSell(uint256 sellOrderId, uint256 buyOrderId, euint64 sellRemainder) external returns (uint256);
     function fillSellRequeueBuy(uint256 sellOrderId, uint256 buyOrderId, euint64 buyRemainder) external returns (uint256);
-    function fillBuyRequeueSellClear(uint256 sellOrderId, uint256 buyOrderId, uint64 sellRemainderClear) external returns (uint256);
-    function fillSellRequeueBuyClear(uint256 sellOrderId, uint256 buyOrderId, uint64 buyRemainderClear) external returns (uint256);
     function buyQueueLength() external view returns (uint256);
     function rotateSellHead() external;
     function rotateBuyHead() external;
@@ -26,6 +23,11 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
         uint256 buyOrderId;
         address seller;
         address buyer;
+        bytes32 priceMatchedHandle;
+        bytes32 buyIsSmallerHandle;
+        bytes32 fillSizeHandle;
+        bytes32 sellRemainderHandle;
+        bytes32 buyRemainderHandle;
         bool exists;
     }
 
@@ -33,23 +35,13 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
     DarkPoolSettlement public immutable settlement;
     address public owner;
     address public gateway;
-    bool public immutable testingMode;
     uint256 public nextRequestId = 1;
     uint256 public scanSellOrderId;
     uint256 public scanAttempts;
 
     mapping(uint256 => PendingMatch) public pendingMatches;
 
-    event MatchRequested(
-        uint256 indexed requestId,
-        uint256 indexed sellOrderId,
-        uint256 indexed buyOrderId,
-        ebool priceMatched,
-        ebool buyIsSmaller,
-        euint64 fillSize,
-        euint64 sellRemainder,
-        euint64 buyRemainder
-    );
+    event MatchRequested(uint256 indexed requestId, uint256 indexed sellOrderId, uint256 indexed buyOrderId);
     event MatchResolved(uint256 indexed requestId, bool matched);
     event PartialFill(uint256 indexed requestId, uint256 indexed smallerOrderId, uint256 indexed remainderOrderId);
 
@@ -63,13 +55,12 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
         _;
     }
 
-    constructor(address settlementAddress, address gatewayAddress, bool _testingMode) {
+    constructor(address settlementAddress, address gatewayAddress) {
         require(settlementAddress != address(0), "zero settlement");
         require(gatewayAddress != address(0), "zero gateway");
         settlement = DarkPoolSettlement(settlementAddress);
         owner = msg.sender;
         gateway = gatewayAddress;
-        testingMode = _testingMode;
     }
 
     function setEscrow(address escrowAddress) external {
@@ -80,6 +71,17 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
     function setGateway(address gatewayAddress) external onlyOwner {
         require(gatewayAddress != address(0), "zero gateway");
         gateway = gatewayAddress;
+    }
+
+    function getPendingHandles(uint256 requestId) external view returns (bytes32[] memory handles) {
+        PendingMatch memory p = pendingMatches[requestId];
+        require(p.exists, "invalid request");
+        handles = new bytes32[](5);
+        handles[0] = p.priceMatchedHandle;
+        handles[1] = p.buyIsSmallerHandle;
+        handles[2] = p.fillSizeHandle;
+        handles[3] = p.sellRemainderHandle;
+        handles[4] = p.buyRemainderHandle;
     }
 
     function onOrdersReady(
@@ -95,18 +97,6 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
         (Order memory sellOrder, Order memory buyOrder) = escrow.consumeHeadOrders();
         require(sellOrder.id == sellOrderId && buyOrder.id == buyOrderId, "stale orders");
 
-        if (testingMode) {
-            uint256 requestIdTest = nextRequestId++;
-            pendingMatches[requestIdTest] = PendingMatch({
-                sellOrderId: sellOrderId,
-                buyOrderId: buyOrderId,
-                seller: sellOrder.trader,
-                buyer: buyOrder.trader,
-                exists: true
-            });
-            return;
-        }
-
         ebool priceMatched = FHE.ge(buyPrice, sellPrice);
         ebool buyIsSmaller = FHE.le(buySize, sellSize);
         euint64 fillSize = FHE.select(buyIsSmaller, buySize, sellSize);
@@ -118,6 +108,11 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
         FHE.allowThis(fillSize);
         FHE.allowThis(sellRemainder);
         FHE.allowThis(buyRemainder);
+        FHE.makePubliclyDecryptable(priceMatched);
+        FHE.makePubliclyDecryptable(buyIsSmaller);
+        FHE.makePubliclyDecryptable(fillSize);
+        FHE.makePubliclyDecryptable(sellRemainder);
+        FHE.makePubliclyDecryptable(buyRemainder);
 
         uint256 requestId = nextRequestId++;
         pendingMatches[requestId] = PendingMatch({
@@ -125,22 +120,37 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
             buyOrderId: buyOrderId,
             seller: sellOrder.trader,
             buyer: buyOrder.trader,
+            priceMatchedHandle: ebool.unwrap(priceMatched),
+            buyIsSmallerHandle: ebool.unwrap(buyIsSmaller),
+            fillSizeHandle: euint64.unwrap(fillSize),
+            sellRemainderHandle: euint64.unwrap(sellRemainder),
+            buyRemainderHandle: euint64.unwrap(buyRemainder),
             exists: true
         });
 
-        emit MatchRequested(requestId, sellOrderId, buyOrderId, priceMatched, buyIsSmaller, fillSize, sellRemainder, buyRemainder);
+        emit MatchRequested(requestId, sellOrderId, buyOrderId);
     }
 
-    function resolveMatch(
-        uint256 requestId,
-        bool matched,
-        bool buyIsSmaller,
-        uint64 fillSizeClear,
-        uint64 sellRemainderClear,
-        uint64 buyRemainderClear
-    ) external onlyGateway {
+    function resolveMatchWithProof(uint256 requestId, bytes calldata cleartexts, bytes calldata decryptionProof)
+        external
+        onlyGateway
+    {
         PendingMatch memory pending = pendingMatches[requestId];
         require(pending.exists, "invalid request");
+
+        bytes32[] memory handles = new bytes32[](5);
+        handles[0] = pending.priceMatchedHandle;
+        handles[1] = pending.buyIsSmallerHandle;
+        handles[2] = pending.fillSizeHandle;
+        handles[3] = pending.sellRemainderHandle;
+        handles[4] = pending.buyRemainderHandle;
+
+        // Verifies KMS signatures/proof against exact ciphertext handles and decoded cleartexts payload.
+        FHE.checkSignatures(handles, cleartexts, decryptionProof);
+
+        (bool matched, bool buyIsSmaller, uint64 fillSizeClear, uint64 sellRemainderClear, uint64 buyRemainderClear) =
+            abi.decode(cleartexts, (bool, bool, uint64, uint64, uint64));
+
         delete pendingMatches[requestId];
 
         if (!matched) {
@@ -153,10 +163,8 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
             }
 
             if (buyLen > 0 && scanAttempts < buyLen) {
-                // Change one side: keep current sell candidate, rotate buy head.
                 escrow.rotateBuyHead();
             } else {
-                // Full loop over opposite side completed: keep pending and rotate sell candidate.
                 escrow.rotateSellHead();
                 scanSellOrderId = 0;
                 scanAttempts = 0;
@@ -170,20 +178,22 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
         scanSellOrderId = 0;
         scanAttempts = 0;
 
-        if (!testingMode) {
-            euint64 fillSize = FHE.asEuint64(fillSizeClear);
-            settlement.settle(pending.seller, pending.buyer, pending.sellOrderId, pending.buyOrderId, fillSize);
-        }
+        euint64 fillSize = FHE.asEuint64(fillSizeClear);
+        settlement.settle(pending.seller, pending.buyer, pending.sellOrderId, pending.buyOrderId, fillSize);
 
         if (buyIsSmaller && sellRemainderClear > 0) {
-            uint256 remainderId = testingMode
-                ? escrow.fillBuyRequeueSellClear(pending.sellOrderId, pending.buyOrderId, sellRemainderClear)
-                : escrow.fillBuyRequeueSell(pending.sellOrderId, pending.buyOrderId, FHE.asEuint64(sellRemainderClear));
+            uint256 remainderId = escrow.fillBuyRequeueSell(
+                pending.sellOrderId,
+                pending.buyOrderId,
+                FHE.asEuint64(sellRemainderClear)
+            );
             emit PartialFill(requestId, pending.buyOrderId, remainderId);
         } else if (!buyIsSmaller && buyRemainderClear > 0) {
-            uint256 remainderId = testingMode
-                ? escrow.fillSellRequeueBuyClear(pending.sellOrderId, pending.buyOrderId, buyRemainderClear)
-                : escrow.fillSellRequeueBuy(pending.sellOrderId, pending.buyOrderId, FHE.asEuint64(buyRemainderClear));
+            uint256 remainderId = escrow.fillSellRequeueBuy(
+                pending.sellOrderId,
+                pending.buyOrderId,
+                FHE.asEuint64(buyRemainderClear)
+            );
             emit PartialFill(requestId, pending.sellOrderId, remainderId);
         } else {
             escrow.fillBoth(pending.sellOrderId, pending.buyOrderId);

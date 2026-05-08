@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-import { DarkPoolToken } from "./DarkPoolToken.sol";
-import { DarkPoolEscrow } from "./DarkPoolEscrow.sol";
-import { DarkPoolMatcher } from "./DarkPoolMatcher.sol";
-import { DarkPoolSettlement } from "./DarkPoolSettlement.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { DarkPoolWrapperDeployer } from "./DarkPoolWrapperDeployer.sol";
+import { DarkPoolPairDeployer } from "./DarkPoolPairDeployer.sol";
 
-contract DarkPoolFactory {
-    address public owner;
-    address public gateway;
+contract DarkPoolFactory is Ownable {
     struct Pair {
         address tokenA;
         address tokenB;
@@ -19,6 +16,10 @@ contract DarkPoolFactory {
         address settlement;
         bool exists;
     }
+
+    address public gateway;
+    DarkPoolWrapperDeployer public immutable wrapperDeployer;
+    DarkPoolPairDeployer public immutable pairDeployer;
 
     mapping(bytes32 => Pair) public pairs;
     mapping(address => address) public wrapperOf;
@@ -37,15 +38,12 @@ contract DarkPoolFactory {
 
     event WrapperDeployed(address indexed underlying, address indexed wrapper);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "only owner");
-        _;
-    }
-
-    constructor(address gatewayAddress) {
+    constructor(address owner_, address gatewayAddress, address wrapperDeployer_, address pairDeployer_) Ownable(owner_) {
         require(gatewayAddress != address(0), "zero gateway");
-        owner = msg.sender;
+        require(wrapperDeployer_ != address(0) && pairDeployer_ != address(0), "zero deployer");
         gateway = gatewayAddress;
+        wrapperDeployer = DarkPoolWrapperDeployer(wrapperDeployer_);
+        pairDeployer = DarkPoolPairDeployer(pairDeployer_);
     }
 
     function setGateway(address gatewayAddress) external onlyOwner {
@@ -60,58 +58,35 @@ contract DarkPoolFactory {
         string calldata symbolA,
         string calldata nameB,
         string calldata symbolB
-    ) external returns (address escrowAddress) {
+    ) external onlyOwner returns (address escrowAddress) {
         require(tokenA != address(0) && tokenB != address(0) && tokenA != tokenB, "invalid pair");
 
-        address t0;
-        address t1;
-        string memory wrapName0;
-        string memory wrapSymbol0;
-        string memory wrapName1;
-        string memory wrapSymbol1;
-        if (tokenA < tokenB) {
-            t0 = tokenA;
-            t1 = tokenB;
-            wrapName0 = nameA;
-            wrapSymbol0 = symbolA;
-            wrapName1 = nameB;
-            wrapSymbol1 = symbolB;
-        } else {
-            t0 = tokenB;
-            t1 = tokenA;
-            wrapName0 = nameB;
-            wrapSymbol0 = symbolB;
-            wrapName1 = nameA;
-            wrapSymbol1 = symbolA;
-        }
+        (address t0, address t1, string memory n0, string memory s0, string memory n1, string memory s1) = tokenA < tokenB
+            ? (tokenA, tokenB, nameA, symbolA, nameB, symbolB)
+            : (tokenB, tokenA, nameB, symbolB, nameA, symbolA);
 
         bytes32 pairHash = keccak256(abi.encodePacked(t0, t1));
         require(!pairs[pairHash].exists, "pair exists");
 
-        address cT0 = _getOrDeployWrapper(t0, wrapName0, wrapSymbol0);
-        address cT1 = _getOrDeployWrapper(t1, wrapName1, wrapSymbol1);
+        address cT0 = _getOrDeployWrapper(t0, n0, s0);
+        address cT1 = _getOrDeployWrapper(t1, n1, s1);
 
-        DarkPoolSettlement settlement = new DarkPoolSettlement(cT0, cT1);
-        DarkPoolMatcher matcher = new DarkPoolMatcher(address(settlement), gateway, false);
-        DarkPoolEscrow escrow = new DarkPoolEscrow(cT0, cT1, address(matcher), false);
-
-        matcher.setEscrow(address(escrow));
-        settlement.setMatcher(address(matcher));
+        (address escrow, address matcher, address settlement) = pairDeployer.deployPair(cT0, cT1, gateway);
 
         pairs[pairHash] = Pair({
             tokenA: t0,
             tokenB: t1,
             cTokenA: cT0,
             cTokenB: cT1,
-            escrow: address(escrow),
-            matcher: address(matcher),
-            settlement: address(settlement),
+            escrow: escrow,
+            matcher: matcher,
+            settlement: settlement,
             exists: true
         });
         allPairHashes.push(pairHash);
 
-        emit PairCreated(t0, t1, cT0, cT1, address(escrow), address(matcher), address(settlement), pairHash);
-        return address(escrow);
+        emit PairCreated(t0, t1, cT0, cT1, escrow, matcher, settlement, pairHash);
+        return escrow;
     }
 
     function pairCount() external view returns (uint256) {
@@ -125,13 +100,11 @@ contract DarkPoolFactory {
 
     function _getOrDeployWrapper(address underlying, string memory name, string memory symbol) internal returns (address) {
         address existing = wrapperOf[underlying];
-        if (existing != address(0)) {
-            return existing;
-        }
+        if (existing != address(0)) return existing;
 
-        DarkPoolToken wrapper = new DarkPoolToken(underlying, name, symbol);
-        wrapperOf[underlying] = address(wrapper);
-        emit WrapperDeployed(underlying, address(wrapper));
-        return address(wrapper);
+        address wrapper = wrapperDeployer.deployWrapper(underlying, name, symbol);
+        wrapperOf[underlying] = wrapper;
+        emit WrapperDeployed(underlying, wrapper);
+        return wrapper;
     }
 }
