@@ -52,7 +52,15 @@ const PERP_PM_ABI = [
 
 const PERP_LIQ_ABI = [
   "function requestLiquidationCheck(address user) returns (uint256)",
+  "function isLiquidatable(address user) view returns (bool)",
+  "function liquidate(address user)",
 ] as const;
+
+const ORACLE_ABI = [
+  "function getPrice1e8() view returns (uint256)",
+  "function getLatestPrice() view returns (uint256)",
+] as const;
+
 export type PerpMarketKey = keyof typeof CONTRACTS.perps.markets;
 function getPerpMarket(marketKey: PerpMarketKey) {
   return CONTRACTS.perps.markets[marketKey];
@@ -736,6 +744,68 @@ export async function requestPerpLiquidationCheck(marketKey: PerpMarketKey, user
   const signer = await provider.getSigner();
   const liq = new ethers.Contract(getPerpMarket(marketKey).liquidationEngine, PERP_LIQ_ABI, signer);
   const tx = await liq.requestLiquidationCheck(user);
+  await tx.wait();
+  return { txHash: tx.hash as string };
+}
+
+export async function getPerpCurrentPrice(marketKey: PerpMarketKey): Promise<string> {
+  const provider = getRpcProvider();
+  const market = getPerpMarket(marketKey);
+  const oracle = new ethers.Contract(market.oracle, ORACLE_ABI, provider);
+  const priceRaw = await oracle.getPrice1e8();
+  return (Number(priceRaw) / 1e8).toString();
+}
+
+export async function getPerpPositionPnL(marketKey: PerpMarketKey, owner: string): Promise<{
+  currentPrice: string;
+  entryPrice: string;
+  isLong: boolean;
+  pnlPercent: string;
+  pnlStatus: "profit" | "loss" | "neutral";
+  sizeHandle: string;
+}> {
+  const provider = getRpcProvider();
+  const pm = new ethers.Contract(getPerpMarket(marketKey).positionManager, PERP_PM_ABI, provider);
+  const p = await pm.getPosition(owner);
+  
+  const market = getPerpMarket(marketKey);
+  const oracle = new ethers.Contract(market.oracle, ORACLE_ABI, provider);
+  const priceRaw = await oracle.getPrice1e8();
+  const currentPrice = Number(priceRaw) / 1e8;
+  const entryPrice = Number(p.entryPrice1e8) / 1e8;
+  
+  let pnlPercent = "0";
+  let pnlStatus: "profit" | "loss" | "neutral" = "neutral";
+  
+  if (entryPrice > 0) {
+    const delta = p.isLong ? currentPrice - entryPrice : entryPrice - currentPrice;
+    pnlPercent = ((delta / entryPrice) * 100).toFixed(2);
+    pnlStatus = delta > 0.001 ? "profit" : delta < -0.001 ? "loss" : "neutral";
+  }
+  
+  return {
+    currentPrice: currentPrice.toString(),
+    entryPrice: entryPrice.toString(),
+    isLong: Boolean(p.isLong),
+    pnlPercent,
+    pnlStatus,
+    sizeHandle: String(p.size),
+  };
+}
+
+export async function checkPerpLiquidatable(marketKey: PerpMarketKey, user: string): Promise<boolean> {
+  const provider = getRpcProvider();
+  const market = getPerpMarket(marketKey);
+  const liq = new ethers.Contract(market.liquidationEngine, PERP_LIQ_ABI, provider);
+  return await liq.isLiquidatable(user);
+}
+
+export async function liquidatePosition(marketKey: PerpMarketKey, user: string) {
+  const provider = getBrowserProvider();
+  const signer = await provider.getSigner();
+  const market = getPerpMarket(marketKey);
+  const liq = new ethers.Contract(market.liquidationEngine, PERP_LIQ_ABI, signer);
+  const tx = await liq.liquidate(user);
   await tx.wait();
   return { txHash: tx.hash as string };
 }

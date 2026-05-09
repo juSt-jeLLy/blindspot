@@ -8,6 +8,10 @@ import {
   getBrowserProvider,
   getPerpFundingStatus,
   getPerpPosition,
+  getPerpCurrentPrice,
+  getPerpPositionPnL,
+  checkPerpLiquidatable,
+  liquidatePosition,
   perpClosePosition,
   perpDepositCollateral,
   perpOpenPosition,
@@ -41,6 +45,9 @@ function PerpsPage() {
 
   const [freeCollateral, setFreeCollateral] = useState("0");
   const [lockedMargin, setLockedMargin] = useState("0");
+  const [currentPrice, setCurrentPrice] = useState("0");
+  const [pnlData, setPnlData] = useState<any>(null);
+  const [isLiquidatable, setIsLiquidatable] = useState(false);
 
   const [size, setSize] = useState("1000");
   const [leverage, setLeverage] = useState("5");
@@ -55,6 +62,7 @@ function PerpsPage() {
     collateralUsdc: string;
     entryPrice: string;
   }>>([]);
+  
   const freeMarginNum = Number(freeCollateral || "0");
   const notionalNum = Number(size || "0");
   const leverageNum = Number(leverage || "0");
@@ -87,29 +95,45 @@ function PerpsPage() {
       const owner = await signer.getAddress();
       setWallet(owner);
 
+      // Get funding status
       const fs = await getPerpFundingStatus({ owner, signer, marketKey });
       setFreeCollateral(fs.freeCollateral);
-      setLockedMargin(position?.isOpen ? position.collateralUsdc : "0");
 
-      if (isZeroHandle(fs.encryptedHandle)) {
-        // no-op: perps page now intentionally focuses on margin availability
-      } else {
-        try {
-          await decryptHandleForUser({
-            handle: fs.encryptedHandle,
-            contractAddress: fs.cToken,
-            userAddress: owner,
-            signer,
-          });
-        } catch {
-          // no-op
-        }
+      // Get current price
+      try {
+        const priceStr = await getPerpCurrentPrice(marketKey);
+        setCurrentPrice(priceStr);
+      } catch {
+        setCurrentPrice("—");
       }
 
+      // Get position
       const p = await getPerpPosition(marketKey, owner);
       setPosition(p);
       setLockedMargin(p?.isOpen ? p.collateralUsdc : "0");
 
+      // Get P&L if position is open
+      if (p?.isOpen) {
+        try {
+          const pnl = await getPerpPositionPnL(marketKey, owner);
+          setPnlData(pnl);
+        } catch (e) {
+          setPnlData(null);
+        }
+
+        // Check liquidatable
+        try {
+          const liq = await checkPerpLiquidatable(marketKey, owner);
+          setIsLiquidatable(liq);
+        } catch {
+          setIsLiquidatable(false);
+        }
+      } else {
+        setPnlData(null);
+        setIsLiquidatable(false);
+      }
+
+      // Get all positions
       const full = await Promise.all(
         marketKeys.map(async (k) => {
           const m = CONTRACTS.perps.markets[k];
@@ -142,7 +166,7 @@ function PerpsPage() {
         sizeHuman: size,
         leverageX: leverage,
       });
-      setStatus("✓ Position opened");
+      setStatus("✓ Position opened at " + currentPrice);
       await refresh();
     } catch (e: any) {
       setError(e?.message ?? "open failed");
@@ -168,15 +192,16 @@ function PerpsPage() {
     }
   }
 
-  async function requestLiq() {
+  async function autoLiquidate() {
     setBusy(true);
     setError(null);
-    setStatus("Requesting liquidation check...");
+    setStatus("Auto-liquidating position...");
     try {
-      await requestPerpLiquidationCheck(marketKey, wallet);
-      setStatus("✓ Liquidation check requested");
+      await liquidatePosition(marketKey, wallet);
+      setStatus("✓ Position liquidated");
+      await refresh();
     } catch (e: any) {
-      setError(e?.message ?? "liq request failed");
+      setError(e?.message ?? "liquidation failed");
       setStatus(null);
     } finally {
       setBusy(false);
@@ -185,131 +210,270 @@ function PerpsPage() {
 
   useEffect(() => {
     refresh();
+    const interval = setInterval(refresh, 5000); // Refresh every 5 seconds
+    return () => clearInterval(interval);
   }, [marketKey]);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 space-y-4">
-      <div className="rounded border border-border bg-card p-4">
-        <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">▸ perps terminal</div>
-        <div className="mt-3 max-w-xs">
-          <select
-            value={marketKey}
-            onChange={(e) => setMarketKey(e.target.value as PerpMarketKey)}
-            className="w-full rounded border border-border bg-background px-4 py-4 text-3xl font-semibold text-primary"
-          >
-            {marketKeys.map((k) => (
-              <option key={k} value={k}>{CONTRACTS.perps.markets[k].symbol}</option>
-            ))}
-          </select>
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
-          <span>Collateral: {CONTRACTS.perps.collateralSymbol}</span>
-          <span className="text-muted-foreground">Type: Perpetual Futures</span>
-        </div>
-        <div className="text-sm text-muted-foreground">Wallet: {wallet || "Not connected"}</div>
-        <div className="text-xs text-muted-foreground mt-1">
-          Trading <span className="text-foreground">{market.symbol}</span> perpetuals with margin in {CONTRACTS.perps.collateralSymbol}.
+    <div className="mx-auto max-w-7xl px-4 py-8 space-y-6">
+      {/* Header */}
+      <div className="rounded border border-border bg-card p-6">
+        <div className="flex items-end justify-between flex-wrap gap-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">▸ perpetual futures</div>
+            <select
+              value={marketKey}
+              onChange={(e) => setMarketKey(e.target.value as PerpMarketKey)}
+              className="mt-2 rounded border border-border bg-background px-4 py-3 text-3xl font-bold text-primary"
+            >
+              {marketKeys.map((k) => (
+                <option key={k} value={k}>{CONTRACTS.perps.markets[k].symbol}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1 text-right">
+            <div className="text-xs text-muted-foreground">Current Price</div>
+            <div className="text-2xl font-bold text-foreground">${currentPrice}</div>
+            <div className="text-xs text-muted-foreground">Collateral: {CONTRACTS.perps.collateralSymbol}</div>
+          </div>
         </div>
       </div>
 
-      <div className="rounded border border-border bg-card p-4">
-        <div className="mb-3 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">Price chart</div>
-        <div className="h-[360px] w-full overflow-hidden rounded border border-border">
+      {/* Price Chart */}
+      <div className="rounded border border-border bg-card overflow-hidden">
+        <div className="p-4 border-b border-border">
+          <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground">Live price chart</div>
+        </div>
+        <div className="h-[420px] w-full overflow-hidden">
           <iframe
             title={`${market.symbol} Chart`}
             src={`https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(
-              TV_SYMBOL_BY_MARKET[market.symbol] || "BINANCE:ETHUSDT",
+              market.symbol === "WETH-PERP" ? "BINANCE:ETHUSDT" : 
+              market.symbol === "WBTC-PERP" ? "BINANCE:BTCUSDT" : 
+              "BINANCE:LINKUSDT",
             )}&interval=15&theme=dark&style=1&timezone=Etc/UTC&toolbar_bg=%23000000&hide_top_toolbar=false&hide_legend=false&save_image=false`}
-            className="h-full w-full"
+            className="h-full w-full border-0"
           />
         </div>
       </div>
 
-      <div className="rounded border border-border bg-card p-4">
-        <div className="mb-3 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">Position Status</div>
-        <div className="mb-4 space-y-2 text-sm">
-          <div>Available Margin ({market.symbol}): {freeCollateral} cUSDC</div>
-          <div>Locked Margin ({market.symbol}): {lockedMargin} cUSDC</div>
-          <div>Total Margin ({market.symbol}): {(Number(freeCollateral || "0") + Number(lockedMargin || "0")).toString()} cUSDC</div>
-          <div className="text-xs text-muted-foreground">Need to add/withdraw? Use <Link to="/profile" className="text-primary underline">Profile</Link>.</div>
-        </div>
-        <div className="mb-3 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">Open New Position</div>
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <button onClick={() => setIsLong(true)} className={`rounded border px-3 py-2 text-xs uppercase tracking-wider ${isLong ? "border-primary text-primary" : "border-border"}`}>Long</button>
-            <button onClick={() => setIsLong(false)} className={`rounded border px-3 py-2 text-xs uppercase tracking-wider ${!isLong ? "border-destructive text-destructive" : "border-border"}`}>Short</button>
-          </div>
-          <label className="text-xs text-muted-foreground">Position size (USDC notional)</label>
-          <input value={size} onChange={(e) => setSize(e.target.value)} className="w-full rounded border border-border bg-background px-3 py-2" placeholder="e.g. 1000" />
-          <label className="text-xs text-muted-foreground">Leverage multiplier (x)</label>
-          <input value={leverage} onChange={(e) => setLeverage(e.target.value)} className="w-full rounded border border-border bg-background px-3 py-2" placeholder="e.g. 5" />
-          <label className="text-xs text-muted-foreground">Margin to lock (USDC)</label>
-          <input value={lockCollateral} onChange={(e) => setLockCollateral(e.target.value)} className="w-full rounded border border-border bg-background px-3 py-2" placeholder="e.g. 5" />
-          <div className="rounded border border-dashed border-border p-3 text-xs space-y-1">
-            <div className="flex justify-between"><span className="text-muted-foreground">Required Margin</span><span>{requiredMargin.toFixed(6)} USDC</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Max Notional</span><span>{maxNotionalAtLeverage.toFixed(6)} USDC</span></div>
-            {impossibleReason ? <div className="text-destructive">Invalid: {impossibleReason}</div> : <div className="text-primary">Valid setup.</div>}
-          </div>
-        </div>
-        <div className="my-4 h-px bg-border" />
-        {position?.isOpen ? (
-          <div className="grid gap-2 text-sm md:grid-cols-2">
-            <div>Market: {market.symbol}</div>
-            <div>Side: {position.isLong ? "Long" : "Short"}</div>
-            <div>Entry Price: {position.entryPrice}</div>
-            <div>Locked Collateral: {position.collateralUsdc} USDC</div>
-            <div className="md:col-span-2">
-              <button disabled={busy} onClick={closePosition} className="rounded border border-border px-3 py-2 text-xs uppercase tracking-wider mr-2">
-                Close This Position
-              </button>
-              <button disabled={busy || !wallet} onClick={requestLiq} className="rounded border border-destructive px-3 py-2 text-xs uppercase tracking-wider text-destructive">
-                Liq Check
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="text-sm text-muted-foreground">
-            No open position for {market.symbol} on this wallet.
-          </div>
-        )}
-        <div className="mt-3">
-          <button disabled={busy || !!impossibleReason} onClick={openPosition} className="rounded border border-primary px-3 py-2 text-xs uppercase tracking-wider text-primary disabled:opacity-60">
-            Open Position
-          </button>
-          <button disabled={busy} onClick={refresh} className="ml-2 rounded border border-border px-3 py-2 text-xs uppercase tracking-wider">
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      <div className="rounded border border-border bg-card p-4">
-        <div className="mb-3 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">All Markets Positions</div>
-        <div className="space-y-2 text-sm">
-          {allPositions.filter((p) => p.isOpen).length === 0 ? (
-            <div className="text-muted-foreground">No open positions across configured perp markets.</div>
-          ) : (
-            allPositions
-              .filter((p) => p.isOpen)
-              .map((p) => (
-                <div key={p.marketKey} className="rounded border border-dashed border-border p-3 flex flex-wrap items-center gap-4">
-                  <div className="font-semibold">{p.symbol}</div>
-                  <div>Side: {p.isLong ? "Long" : "Short"}</div>
-                  <div>Entry: {p.entryPrice}</div>
-                  <div>Collateral: {p.collateralUsdc} USDC</div>
-                  <button
-                    onClick={() => setMarketKey(p.marketKey)}
-                    className="rounded border border-border px-2 py-1 text-[10px] uppercase tracking-wider"
-                  >
-                    View Market
-                  </button>
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Position Details */}
+        <div className="rounded border border-border bg-card p-6">
+          <div className="mb-4 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">Current Position</div>
+          
+          {position?.isOpen ? (
+            <div className="space-y-4">
+              {/* Position Status */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="rounded border border-dashed border-border p-3">
+                  <div className="text-xs text-muted-foreground">Side</div>
+                  <div className={`text-lg font-bold ${position.isLong ? "text-primary" : "text-destructive"}`}>
+                    {position.isLong ? "▲ LONG" : "▼ SHORT"}
+                  </div>
                 </div>
-              ))
+                <div className="rounded border border-dashed border-border p-3">
+                  <div className="text-xs text-muted-foreground">Entry Price</div>
+                  <div className="text-lg font-bold">${position.entryPrice}</div>
+                </div>
+                <div className="rounded border border-dashed border-border p-3">
+                  <div className="text-xs text-muted-foreground">Margin Locked</div>
+                  <div className="text-lg font-bold">{position.collateralUsdc} USDC</div>
+                </div>
+                <div className="rounded border border-dashed border-border p-3">
+                  <div className="text-xs text-muted-foreground">Current Price</div>
+                  <div className="text-lg font-bold">${currentPrice}</div>
+                </div>
+              </div>
+
+              {/* P&L Display */}
+              {pnlData && (
+                <div className={`rounded border p-4 ${pnlData.pnlStatus === "profit" ? "border-primary/40 bg-primary/5" : pnlData.pnlStatus === "loss" ? "border-destructive/40 bg-destructive/5" : "border-border"}`}>
+                  <div className="flex items-end justify-between">
+                    <div>
+                      <div className="text-xs text-muted-foreground">Unrealized P&L</div>
+                      <div className={`text-2xl font-bold ${pnlData.pnlStatus === "profit" ? "text-primary" : pnlData.pnlStatus === "loss" ? "text-destructive" : "text-foreground"}`}>
+                        {pnlData.pnlPercent}%
+                      </div>
+                    </div>
+                    <div className={`px-3 py-1 rounded text-xs font-semibold ${pnlData.pnlStatus === "profit" ? "bg-primary/20 text-primary" : pnlData.pnlStatus === "loss" ? "bg-destructive/20 text-destructive" : "bg-muted"}`}>
+                      {pnlData.pnlStatus.toUpperCase()}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Liquidation Status */}
+              {isLiquidatable && (
+                <div className="rounded border border-destructive/40 bg-destructive/10 p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs text-destructive font-semibold">⚠ LIQUIDATABLE</div>
+                      <div className="text-sm text-destructive/80 mt-1">Position health is critical. This position can be instantly liquidated.</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="border-t border-border pt-4 space-y-2">
+                <button 
+                  disabled={busy} 
+                  onClick={closePosition} 
+                  className="w-full rounded border border-border px-3 py-2 text-sm uppercase tracking-wider hover:border-primary hover:text-primary disabled:opacity-60"
+                >
+                  ✕ Close Position
+                </button>
+                {isLiquidatable && (
+                  <button 
+                    disabled={busy} 
+                    onClick={autoLiquidate} 
+                    className="w-full rounded border border-destructive px-3 py-2 text-sm uppercase tracking-wider text-destructive hover:bg-destructive/10 disabled:opacity-60"
+                  >
+                    ⚡ Auto-Liquidate Now
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded border border-dashed border-muted p-6 text-center">
+              <div className="text-sm text-muted-foreground mb-2">No open position</div>
+              <div className="text-xs text-muted-foreground">Create a new position using the form below.</div>
+            </div>
           )}
         </div>
+
+        {/* Open New Position Form */}
+        <div className="rounded border border-border bg-card p-6">
+          <div className="mb-4 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">Create a New Trade</div>
+          
+          <div className="space-y-4">
+            {/* Side Selection */}
+            <div>
+              <div className="text-xs text-muted-foreground mb-2">Direction</div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setIsLong(true)} 
+                  className={`flex-1 rounded border px-3 py-2 text-sm font-semibold uppercase tracking-wider transition-colors ${isLong ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"}`}
+                >
+                  ▲ Long
+                </button>
+                <button 
+                  onClick={() => setIsLong(false)} 
+                  className={`flex-1 rounded border px-3 py-2 text-sm font-semibold uppercase tracking-wider transition-colors ${!isLong ? "border-destructive bg-destructive/10 text-destructive" : "border-border text-muted-foreground hover:text-foreground"}`}
+                >
+                  ▼ Short
+                </button>
+              </div>
+            </div>
+
+            {/* Inputs */}
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Position Size (USDC)</label>
+              <input 
+                type="number"
+                value={size} 
+                onChange={(e) => setSize(e.target.value)} 
+                className="w-full rounded border border-border bg-background px-3 py-2 text-sm" 
+                placeholder="e.g. 1000" 
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Leverage (x)</label>
+              <input 
+                type="number"
+                value={leverage} 
+                onChange={(e) => setLeverage(e.target.value)} 
+                className="w-full rounded border border-border bg-background px-3 py-2 text-sm" 
+                placeholder="e.g. 5" 
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Margin to Lock (USDC)</label>
+              <input 
+                type="number"
+                value={lockCollateral} 
+                onChange={(e) => setLockCollateral(e.target.value)} 
+                className="w-full rounded border border-border bg-background px-3 py-2 text-sm" 
+                placeholder="e.g. 5" 
+              />
+            </div>
+
+            {/* Summary */}
+            <div className="rounded border border-dashed border-border p-3 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Available Margin</span>
+                <span className="font-semibold">{freeCollateral} USDC</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Required Margin</span>
+                <span className="font-semibold">{requiredMargin.toFixed(2)} USDC</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Max Notional @ Leverage</span>
+                <span className="font-semibold">${maxNotionalAtLeverage.toFixed(2)}</span>
+              </div>
+              <div className="border-t border-border pt-2 flex justify-between">
+                <span className="text-muted-foreground">Entry Price</span>
+                <span className="font-bold text-foreground">${currentPrice}</span>
+              </div>
+              {impossibleReason && (
+                <div className="text-destructive font-semibold">❌ {impossibleReason}</div>
+              )}
+            </div>
+
+            {/* Action Button */}
+            <button 
+              disabled={busy || !!impossibleReason || !wallet} 
+              onClick={openPosition} 
+              className="w-full rounded border border-primary bg-primary/10 px-3 py-3 text-sm font-bold uppercase tracking-wider text-primary hover:bg-primary/20 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              → Open Position
+            </button>
+
+            <button 
+              disabled={busy} 
+              onClick={refresh} 
+              className="w-full rounded border border-border px-3 py-2 text-xs uppercase tracking-wider hover:border-primary hover:text-primary"
+            >
+              ↻ Refresh Data
+            </button>
+          </div>
+        </div>
       </div>
 
-      {status && <div className="rounded border border-primary/40 bg-primary/10 p-2 text-sm text-primary">{status}</div>}
-      {error && <div className="rounded border border-destructive/40 bg-destructive/10 p-2 text-sm text-destructive">{error}</div>}
+      {/* All Positions */}
+      {allPositions.filter(p => p.isOpen).length > 0 && (
+        <div className="rounded border border-border bg-card p-6">
+          <div className="mb-4 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">All Open Positions</div>
+          <div className="space-y-3">
+            {allPositions.filter(p => p.isOpen).map((p) => (
+              <div key={p.marketKey} className="rounded border border-dashed border-border p-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="font-bold text-foreground">{p.symbol}</div>
+                  <div className="text-xs text-muted-foreground">{p.isLong ? "Long" : "Short"} @ ${p.entryPrice}</div>
+                </div>
+                <div className="text-sm">
+                  <div className="text-muted-foreground text-xs">Margin</div>
+                  <div className="font-semibold">{p.collateralUsdc} USDC</div>
+                </div>
+                <button
+                  onClick={() => setMarketKey(p.marketKey)}
+                  className="rounded border border-border px-3 py-1 text-xs uppercase tracking-wider hover:border-primary hover:text-primary"
+                >
+                  View
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Messages */}
+      {status && <div className="rounded border border-primary/40 bg-primary/10 p-3 text-sm text-primary">{status}</div>}
+      {error && <div className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
     </div>
   );
 }
