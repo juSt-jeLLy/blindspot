@@ -195,7 +195,10 @@ export async function getFundingContractsForPair(args: {
 }): Promise<{ cToken: string; underlyingToken: string }> {
   const provider = getRpcProvider();
   const escrow = getEscrowContract(args.pairKey, provider);
-  const cToken = args.side === "Buy" ? String(await escrow.cTokenB()) : String(await escrow.cTokenA());
+  // Funding token is what trader pays:
+  // - Buy => pay quote token (A on this escrow deployment)
+  // - Sell => pay base token (B on this escrow deployment)
+  const cToken = args.side === "Buy" ? String(await escrow.cTokenA()) : String(await escrow.cTokenB());
   const wrapper = new ethers.Contract(cToken, WRAPPER_ABI, provider);
   const underlyingToken = String(await wrapper.underlying());
   return { cToken, underlyingToken };
