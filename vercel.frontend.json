@@ -11,6 +11,7 @@
     }
   ],
   "routes": [
+    { "src": "/api/(.*)", "status": 404, "dest": "/index.html" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
