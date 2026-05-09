@@ -1,10 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { getBrowserProvider, getConfidentialTokenStatus, getConfidentialTokens, unwrapConfidentialToUnderlying } from "@/lib/web3";
+import { useEffect, useMemo, useState } from "react";
+import {
+  getBrowserProvider,
+  getConfidentialTokenStatus,
+  getConfidentialTokens,
+  unwrapConfidentialToUnderlying,
+} from "@/lib/web3";
 import { decryptHandleForUser } from "@/lib/fhe";
 import { formatUnits } from "ethers";
 
-type Row = {
+type TokenState = {
   cToken: string;
   cSymbol: string;
   underlying: string;
@@ -12,10 +17,6 @@ type Row = {
   underlyingBalance: string;
   encryptedHandle: string;
   decryptedBalance?: string;
-  unwrapAmount?: string;
-  busy?: boolean;
-  error?: string;
-  status?: string;
 };
 
 export const Route = createFileRoute("/profile")({ component: ProfilePage });
@@ -30,13 +31,23 @@ function shortAddr(a: string) {
 
 function ProfilePage() {
   const [wallet, setWallet] = useState<string>("");
-  const [rows, setRows] = useState<Row[]>([]);
+  const [tokens, setTokens] = useState<TokenState[]>([]);
+  const [selected, setSelected] = useState<string>("");
+  const [unwrapAmount, setUnwrapAmount] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const current = useMemo(
+    () => tokens.find((t) => t.cToken.toLowerCase() === selected.toLowerCase()) ?? null,
+    [tokens, selected],
+  );
 
   async function load() {
     setLoading(true);
     setGlobalError(null);
+    setStatus(null);
     try {
       const provider = getBrowserProvider();
       const signer = await provider.getSigner();
@@ -44,16 +55,25 @@ function ProfilePage() {
       setWallet(owner);
 
       const list = getConfidentialTokens();
-      const nextRows: Row[] = [];
+      const next: TokenState[] = [];
       for (const token of list) {
-        const s = await getConfidentialTokenStatus({ cToken: token.address, owner, signer });
-        nextRows.push({
+        const s = await getConfidentialTokenStatus({
+          cToken: token.address,
+          owner,
+          signer,
+        });
+        next.push({
           ...s,
           decryptedBalance: isZeroHandle(s.encryptedHandle) ? "0" : undefined,
-          unwrapAmount: "",
         });
       }
-      setRows(nextRows);
+
+      setTokens(next);
+      if (!selected && next.length > 0) {
+        setSelected(next[0].cToken);
+      } else if (selected && !next.some((t) => t.cToken.toLowerCase() === selected.toLowerCase())) {
+        setSelected(next[0]?.cToken ?? "");
+      }
     } catch (e: any) {
       setGlobalError(e?.message ?? "failed to load profile");
     } finally {
@@ -61,51 +81,74 @@ function ProfilePage() {
     }
   }
 
-  async function decryptRow(i: number) {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, busy: true, error: undefined, status: "Decrypting..." } : r)));
+  async function decryptCurrent() {
+    if (!current) return;
+    setBusy(true);
+    setStatus("Decrypting...");
+    setGlobalError(null);
     try {
       const provider = getBrowserProvider();
       const signer = await provider.getSigner();
       const userAddress = await signer.getAddress();
-      const row = rows[i];
-      if (isZeroHandle(row.encryptedHandle)) {
-        setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, decryptedBalance: "0", busy: false, status: "✓ No confidential balance" } : r)));
+
+      if (isZeroHandle(current.encryptedHandle)) {
+        setTokens((prev) =>
+          prev.map((t) =>
+            t.cToken.toLowerCase() === current.cToken.toLowerCase()
+              ? { ...t, decryptedBalance: "0" }
+              : t,
+          ),
+        );
+        setStatus("✓ No confidential balance");
         return;
       }
+
       const value = await decryptHandleForUser({
-        handle: row.encryptedHandle,
-        contractAddress: row.cToken,
+        handle: current.encryptedHandle,
+        contractAddress: current.cToken,
         userAddress,
         signer,
       });
-      setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, decryptedBalance: formatUnits(value, 6), busy: false, status: "✓ Decrypted" } : r)));
+
+      setTokens((prev) =>
+        prev.map((t) =>
+          t.cToken.toLowerCase() === current.cToken.toLowerCase()
+            ? { ...t, decryptedBalance: formatUnits(value, 6) }
+            : t,
+        ),
+      );
+      setStatus("✓ Decrypted");
     } catch (e: any) {
-      setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, busy: false, error: e?.message ?? "decrypt failed", status: undefined } : r)));
+      setGlobalError(e?.message ?? "decrypt failed");
+      setStatus(null);
+    } finally {
+      setBusy(false);
     }
   }
 
-  async function unwrapRow(i: number) {
-    const row = rows[i];
-    const amount = (row.unwrapAmount ?? "").trim();
+  async function unwrapCurrent() {
+    if (!current) return;
+    const amount = unwrapAmount.trim();
     if (!amount) return;
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, busy: true, error: undefined, status: "Unwrapping..." } : r)));
+
+    setBusy(true);
+    setStatus("Unwrapping...");
+    setGlobalError(null);
     try {
-      const res = await unwrapConfidentialToUnderlying({ cToken: row.cToken, amountHuman: amount });
-      setRows((prev) =>
-        prev.map((r, idx) =>
-          idx === i
-            ? {
-                ...r,
-                busy: false,
-                status: `✓ Unwrapped (${res.unwrapTxHash.slice(0, 10)}..., ${res.finalizeTxHash.slice(0, 10)}...)`,
-                unwrapAmount: "",
-              }
-            : r,
-        ),
+      const res = await unwrapConfidentialToUnderlying({
+        cToken: current.cToken,
+        amountHuman: amount,
+      });
+      setUnwrapAmount("");
+      setStatus(
+        `✓ Unwrapped (${res.unwrapTxHash.slice(0, 10)}..., ${res.finalizeTxHash.slice(0, 10)}...)`,
       );
       await load();
     } catch (e: any) {
-      setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, busy: false, error: e?.message ?? "unwrap failed", status: undefined } : r)));
+      setGlobalError(e?.message ?? "unwrap failed");
+      setStatus(null);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -114,58 +157,95 @@ function ProfilePage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8">
+    <div className="mx-auto max-w-5xl px-4 py-8">
       <div className="mb-6 rounded border border-border bg-card p-4">
-        <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">▸ profile / portfolio</div>
-        <div className="mt-2 text-sm text-foreground">Wallet: {wallet ? shortAddr(wallet) : "Not connected"}</div>
-        <button onClick={load} className="mt-3 rounded border border-border px-3 py-2 text-xs uppercase tracking-wider hover:border-primary hover:text-primary">
+        <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+          ▸ profile / confidential balances
+        </div>
+        <div className="mt-2 text-sm text-foreground">
+          Wallet: {wallet ? shortAddr(wallet) : "Not connected"}
+        </div>
+        <button
+          onClick={load}
+          className="mt-3 rounded border border-border px-3 py-2 text-xs uppercase tracking-wider hover:border-primary hover:text-primary"
+        >
           {loading ? "Refreshing..." : "Refresh"}
         </button>
         {globalError && <div className="mt-3 text-sm text-destructive">{globalError}</div>}
       </div>
 
-      <div className="space-y-4">
-        {rows.map((row, i) => (
-          <div key={row.cToken} className="rounded border border-border bg-card p-4">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm uppercase tracking-[0.2em] text-primary">{row.cSymbol} / {row.underlyingSymbol}</div>
-              <div className="font-mono text-xs text-muted-foreground">{shortAddr(row.cToken)}</div>
-            </div>
+      <div className="rounded border border-border bg-card p-4">
+        <div className="mb-4 grid gap-3 md:grid-cols-[200px_1fr] md:items-end">
+          <label className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+            Token
+          </label>
+          <select
+            value={selected}
+            onChange={(e) => {
+              setSelected(e.target.value);
+              setStatus(null);
+              setGlobalError(null);
+            }}
+            className="w-full rounded border border-border bg-background px-3 py-2 text-sm"
+          >
+            {tokens.map((t) => (
+              <option key={t.cToken} value={t.cToken}>
+                {t.cSymbol} / {t.underlyingSymbol}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {current ? (
+          <>
             <div className="grid grid-cols-1 gap-2 text-sm md:grid-cols-2">
+              <div className="text-muted-foreground">Confidential Token</div>
+              <div className="font-mono">{shortAddr(current.cToken)}</div>
+
               <div className="text-muted-foreground">Underlying Wallet Balance</div>
-              <div>{row.underlyingBalance} {row.underlyingSymbol}</div>
+              <div>
+                {current.underlyingBalance} {current.underlyingSymbol}
+              </div>
+
               <div className="text-muted-foreground">Confidential Balance Handle</div>
-              <div className="font-mono">{shortAddr(row.encryptedHandle)}</div>
+              <div className="font-mono">{shortAddr(current.encryptedHandle)}</div>
+
               <div className="text-muted-foreground">Confidential Balance (decrypted)</div>
-              <div>{row.decryptedBalance ?? "Encrypted" } {row.cSymbol}</div>
+              <div>
+                {current.decryptedBalance ?? "Encrypted"} {current.cSymbol}
+              </div>
             </div>
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-5 grid gap-3 md:grid-cols-[auto_1fr_auto]">
               <button
-                disabled={row.busy}
-                onClick={() => decryptRow(i)}
+                disabled={busy}
+                onClick={decryptCurrent}
                 className="rounded border border-border px-3 py-2 text-xs uppercase tracking-wider hover:border-primary hover:text-primary disabled:opacity-60"
               >
                 Decrypt Balance
               </button>
+
               <input
-                value={row.unwrapAmount ?? ""}
-                onChange={(e) => setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, unwrapAmount: e.target.value } : r)))}
-                placeholder={`Unwrap amount (${row.cSymbol})`}
-                className="min-w-52 flex-1 rounded border border-border bg-background px-3 py-2 text-sm"
+                value={unwrapAmount}
+                onChange={(e) => setUnwrapAmount(e.target.value)}
+                placeholder={`Unwrap amount (${current.cSymbol})`}
+                className="w-full rounded border border-border bg-background px-3 py-2 text-sm"
               />
+
               <button
-                disabled={row.busy || !(row.unwrapAmount ?? "").trim()}
-                onClick={() => unwrapRow(i)}
+                disabled={busy || !unwrapAmount.trim()}
+                onClick={unwrapCurrent}
                 className="rounded border border-primary bg-primary/10 px-3 py-2 text-xs uppercase tracking-wider text-primary disabled:opacity-60"
               >
-                Unwrap to {row.underlyingSymbol}
+                Unwrap to {current.underlyingSymbol}
               </button>
             </div>
-            {row.status && <div className="mt-2 text-sm text-primary">{row.status}</div>}
-            {row.error && <div className="mt-2 text-sm text-destructive">{row.error}</div>}
-          </div>
-        ))}
+
+            {status && <div className="mt-3 text-sm text-primary">{status}</div>}
+          </>
+        ) : (
+          <div className="text-sm text-muted-foreground">No confidential tokens configured.</div>
+        )}
       </div>
     </div>
   );
