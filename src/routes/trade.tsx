@@ -1,257 +1,174 @@
-import { TimeAgo } from "@/components/TimeAgo";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { PAIRS, ORDERS, type Side } from "@/lib/mock";
+import { useEffect, useMemo, useState } from "react";
+import type { PairKey } from "@/lib/contracts-config";
+import { LIVE_PAIRS } from "@/lib/live-pairs";
+import { decryptHandleForUser, encryptOrderInputs } from "@/lib/fhe";
+import { formatUnits } from "ethers";
+import {
+  type Side,
+  approveConfidentialForEscrow,
+  approveUnderlyingForWrapper,
+  getBrowserProvider,
+  getFundingContractsForPair,
+  getFundingStatus,
+  submitEncryptedOrder,
+  wrapIntoConfidential,
+} from "@/lib/web3";
 
-export const Route = createFileRoute("/trade")({
-  head: () => ({ meta: [{ title: "Trade — Blindspot" }, { name: "description", content: "Submit encrypted buy/sell orders to Blindspot's FHE matching engine." }] }),
-  component: Trade,
-});
+export const Route = createFileRoute("/trade")({ component: Trade });
+
+function isZeroHandle(handle?: string | null) {
+  return !handle || /^0x0{64}$/i.test(handle);
+}
 
 function Trade() {
-  const [pairId, setPairId] = useState(PAIRS[0].id);
+  const [pairId, setPairId] = useState<string>(LIVE_PAIRS[0]?.key ?? "WETH_USDC");
   const [side, setSide] = useState<Side>("Buy");
-  const [size, setSize] = useState("");
   const [price, setPrice] = useState("");
+  const [size, setSize] = useState("");
+  const [fundAmount, setFundAmount] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [fundingInfo, setFundingInfo] = useState<any>(null);
+  const [fundingError, setFundingError] = useState<string | null>(null);
 
-  const pair = PAIRS.find((p) => p.id === pairId)!;
-  const pairLabel = `${pair.tokenA}/${pair.tokenB}`;
-  const pairOrders = useMemo(() => ORDERS.filter((o) => o.pair === pairLabel), [pairLabel]);
+  const pair = LIVE_PAIRS.find((p) => p.key === pairId) ?? LIVE_PAIRS[0];
+  const fundingToken = side === "Buy" ? pair?.tokenB : pair?.tokenA;
 
-  const isBuy = side === "Buy";
-  const accent = isBuy ? "primary" : "destructive";
+  const notional = useMemo(() => {
+    if (!price || !size) return "—";
+    return (Number(price) * Number(size)).toFixed(6);
+  }, [price, size]);
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setStatus("⌬ ENCRYPTING PAYLOAD…");
-    setTimeout(() => setStatus("▸ BROADCASTING TO MATCHER…"), 700);
-    setTimeout(() => setStatus("● SUBMITTED · awaiting match"), 1500);
-    setTimeout(() => { setStatus(null); setSubmitting(false); }, 4500);
-    setSize(""); setPrice("");
+  async function refreshFundingInfo() {
+    if (!pair) return;
+    try {
+      const provider = getBrowserProvider();
+      const signer = await provider.getSigner();
+      const owner = await signer.getAddress();
+      const funding = await getFundingContractsForPair({ pairKey: pair.key as PairKey, side });
+      const info = await getFundingStatus({
+        underlyingToken: funding.underlyingToken,
+        cToken: funding.cToken,
+        escrow: pair.escrow,
+        owner,
+        signer,
+      });
+
+      if (isZeroHandle(info.confidentialBalanceHandle)) {
+        info.confidentialBalance = "0";
+      } else {
+        try {
+          const decrypted = await decryptHandleForUser({
+            handle: info.confidentialBalanceHandle,
+            contractAddress: funding.cToken,
+            userAddress: owner,
+            signer,
+          });
+          info.confidentialBalance = formatUnits(decrypted, 6);
+        } catch (e: any) {
+          setFundingError(`decrypt failed: ${e?.message ?? "unknown"}`);
+        }
+      }
+
+      setFundingInfo(info);
+      if (!fundingError) setFundingError(null);
+    } catch (e: any) {
+      setFundingError(e?.message ?? "status read failed");
+      setFundingInfo(null);
+    }
   }
 
-  const notional = size && price ? (parseFloat(size) * parseFloat(price)).toFixed(2) : "—";
+  async function handlePrepareFunding() {
+    if (!pair || !fundAmount) return;
+    setSubmitting(true);
+    try {
+      const funding = await getFundingContractsForPair({ pairKey: pair.key as PairKey, side });
+      await approveUnderlyingForWrapper({
+        underlyingToken: funding.underlyingToken,
+        wrapperToken: funding.cToken,
+        amountHuman: fundAmount,
+      });
+      await wrapIntoConfidential({ wrapperToken: funding.cToken, amountHuman: fundAmount });
+      await approveConfidentialForEscrow({ cToken: funding.cToken, escrow: pair.escrow, amountHuman: fundAmount });
+      setStatus("✓ Funding ready");
+      await refreshFundingInfo();
+    } catch (e: any) {
+      setStatus(`✕ Funding flow failed: ${e?.message ?? "unknown"}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pair || !price || !size) return;
+    setSubmitting(true);
+    setStatus("Encrypting...");
+    try {
+      const provider = getBrowserProvider();
+      const signer = await provider.getSigner();
+      const userAddress = await signer.getAddress();
+      const encrypted = await encryptOrderInputs({
+        contractAddress: pair.escrow,
+        userAddress,
+        priceDecimal: price,
+        sizeDecimal: size,
+      });
+      const res = await submitEncryptedOrder({
+        pairKey: pair.key as PairKey,
+        side,
+        encPriceHandle: encrypted.encPriceHandle,
+        priceProof: encrypted.inputProof,
+        encSizeHandle: encrypted.encSizeHandle,
+        sizeProof: encrypted.inputProof,
+      });
+      setStatus(`✓ Submitted: ${res.txHash}`);
+    } catch (e: any) {
+      setStatus(`✕ Submit failed: ${e?.message ?? "unknown"}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshFundingInfo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairId, side]);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8">
-      {/* Header strip */}
-      <div className="mb-6 flex flex-col gap-3 rounded border border-border bg-card p-4 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-4">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">▸ trade terminal</div>
-            <div className="mt-1 text-lg text-foreground">
-              {pair.tokenA}<span className="text-muted-foreground">/</span>{pair.tokenB}
-            </div>
-          </div>
-          <div className="hidden h-10 w-px bg-border md:block" />
-          <div className="hidden md:block">
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">last match</div>
-            <div className="text-xs text-primary">[ENCRYPTED]</div>
-          </div>
-          <div className="hidden md:block">
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">depth</div>
-            <div className="text-xs text-foreground">{pairOrders.length} active</div>
-          </div>
-        </div>
-        <div className="relative">
-          <select
-            value={pairId}
-            onChange={(e) => setPairId(e.target.value)}
-            className="appearance-none rounded border border-border bg-background px-4 py-2 pr-8 text-sm text-primary focus:border-primary focus:outline-none"
-          >
-            {PAIRS.map((p) => (
-              <option key={p.id} value={p.id}>{p.tokenA}/{p.tokenB}</option>
-            ))}
-          </select>
-          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-primary">▾</span>
-        </div>
+    <div className="mx-auto max-w-5xl px-4 py-8">
+      <div className="mb-4 flex gap-3">
+        <select value={pairId} onChange={(e) => setPairId(e.target.value)} className="rounded border border-border bg-background px-3 py-2 text-sm">
+          {LIVE_PAIRS.map((p) => <option key={p.key} value={p.key}>{p.tokenA}/{p.tokenB}</option>)}
+        </select>
+        <button onClick={() => setSide("Buy")} className="rounded border px-3 py-2">Buy</button>
+        <button onClick={() => setSide("Sell")} className="rounded border px-3 py-2">Sell</button>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
-        {/* Order ticket */}
-        <div className="rounded border border-border bg-card">
-          {/* Side toggle */}
-          <div className="grid grid-cols-2">
-            {(["Buy", "Sell"] as const).map((s) => {
-              const active = side === s;
-              const isB = s === "Buy";
-              return (
-                <button
-                  key={s}
-                  onClick={() => setSide(s)}
-                  className={`relative py-3 text-xs uppercase tracking-[0.3em] transition ${
-                    active
-                      ? isB
-                        ? "bg-primary/10 text-primary"
-                        : "bg-destructive/10 text-destructive"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {isB ? "▲ BUY" : "▼ SELL"}
-                  {active && (
-                    <span className={`absolute inset-x-0 bottom-0 h-px ${isB ? "bg-primary" : "bg-destructive"}`} />
-                  )}
-                </button>
-              );
-            })}
-          </div>
+      <form onSubmit={submit} className="space-y-3 rounded border border-border p-4">
+        <div className="text-xs text-muted-foreground">Funding token for current side: {fundingToken}</div>
+        <input value={fundAmount} onChange={(e) => setFundAmount(e.target.value)} placeholder={`Funding Amount (${fundingToken})`} className="w-full rounded border border-border bg-background px-3 py-2" />
+        <button type="button" onClick={handlePrepareFunding} disabled={submitting || !fundAmount} className="w-full rounded border border-border px-3 py-2">Prepare Funding (Approve → Wrap → Approve Escrow)</button>
 
-          <form onSubmit={submit} className="space-y-5 p-6">
-            <Field
-              label="Size"
-              suffix={pair.tokenA}
-              value={size}
-              onChange={setSize}
-              accent={accent}
-            />
-            <Field
-              label="Limit Price"
-              suffix={pair.tokenB}
-              value={price}
-              onChange={setPrice}
-              accent={accent}
-            />
-
-            {/* Quick-percentage chips */}
-            <div className="flex gap-2">
-              {["25%", "50%", "75%", "MAX"].map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  className="flex-1 rounded border border-border bg-background py-1.5 text-[10px] uppercase tracking-widest text-muted-foreground hover:border-primary/50 hover:text-primary"
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
-
-            {/* Summary */}
-            <div className="space-y-1.5 rounded border border-dashed border-border bg-background/40 p-3 text-[11px]">
-              <Row label="Est. Notional" value={`${notional} ${pair.tokenB}`} />
-              <Row label="Network Fee" value="~0.0008 ETH" />
-              <Row label="Privacy" value="FHE · client-side" valueClass="text-primary" />
-            </div>
-
-            <div className="flex items-start gap-2 rounded border border-primary/30 bg-primary/5 p-3 text-[10px] leading-relaxed text-muted-foreground">
-              <span className="mt-0.5 text-primary">⌬</span>
-              <span>
-                Inputs are encrypted in your browser via fully homomorphic encryption.
-                The matcher computes on ciphertext — neither operators nor MEV bots
-                can read your size or price.
-              </span>
-            </div>
-
-            <button
-              type="submit"
-              disabled={submitting}
-              className={`group relative w-full overflow-hidden rounded border px-4 py-3.5 text-xs uppercase tracking-[0.3em] transition disabled:opacity-60 ${
-                isBuy
-                  ? "border-primary bg-primary/10 text-primary hover:bg-primary/20"
-                  : "border-destructive bg-destructive/10 text-destructive hover:bg-destructive/20"
-              }`}
-            >
-              <span className="relative z-10">⌬ Encrypt &amp; Submit {side}</span>
-            </button>
-
-            {status && (
-              <div className={`rounded border px-3 py-2 text-center text-[11px] uppercase tracking-widest ${
-                isBuy ? "border-primary/40 bg-primary/5 text-primary" : "border-destructive/40 bg-destructive/5 text-destructive"
-              }`}>
-                {status}
-              </div>
-            )}
-          </form>
+        <div className="rounded border border-dashed border-border p-3 text-sm">
+          <div>Underlying Balance: {fundingInfo?.underlyingBalance ?? "—"} {fundingToken}</div>
+          <div>Approved to Wrapper: {fundingInfo?.underlyingAllowanceToWrapper ?? "—"} {fundingToken}</div>
+          <div>Available for Trading (confidential): {fundingInfo?.confidentialBalance ?? "—"} c{fundingToken}</div>
+          <div>Confidential Balance Handle: {fundingInfo?.confidentialBalanceHandle?.slice(0, 12) ?? "—"}...</div>
+          <div>Escrow Permission: {fundingInfo ? (fundingInfo.escrowOperatorEnabled ? "Enabled" : "Not enabled") : "—"}</div>
+          {fundingError && <div className="text-xs text-destructive">status read failed: {fundingError}</div>}
+          <button type="button" onClick={refreshFundingInfo} className="mt-2 w-full rounded border border-border px-3 py-2">Refresh Funding Status</button>
         </div>
 
-        {/* Order book / status panel */}
-        <aside className="rounded border border-border bg-card">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">▸ active orders</h2>
-            <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-primary">
-              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-              live
-            </span>
-          </div>
-          {pairOrders.length === 0 ? (
-            <div className="px-4 py-12 text-center text-xs text-muted-foreground">
-              <div className="mb-2 text-2xl text-terminal-dim">∅</div>
-              No active orders for {pairLabel}.
-            </div>
-          ) : (
-            <ul className="divide-y divide-border">
-              {pairOrders.map((o) => (
-                <li key={o.id} className="px-4 py-3 text-xs hover:bg-background/40">
-                  <div className="flex items-center justify-between">
-                    <span className={`text-[11px] ${o.side === "Buy" ? "text-primary" : "text-destructive"}`}>
-                      {o.side === "Buy" ? "▲" : "▼"} {o.side.toUpperCase()}
-                    </span>
-                    <StatusPill status={o.status} />
-                  </div>
-                  <div className="mt-1.5 flex justify-between text-[10px] text-muted-foreground">
-                    <span className="font-mono">{o.id}</span>
-                    <span><TimeAgo ts={o.timestamp} /></span>
-                  </div>
-                  <div className="mt-1 text-[10px] text-terminal-dim">size: ▒▒▒▒▒▒</div>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="border-t border-border px-4 py-2 text-center text-[10px] uppercase tracking-widest text-muted-foreground">
-            sizes hidden · fhe-encrypted
-          </div>
-        </aside>
-      </div>
+        <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" className="w-full rounded border border-border bg-background px-3 py-2" />
+        <input value={size} onChange={(e) => setSize(e.target.value)} placeholder="Size" className="w-full rounded border border-border bg-background px-3 py-2" />
+        <div className="text-xs">Est. Notional: {notional}</div>
+        <button type="submit" disabled={submitting || !price || !size} className="w-full rounded border border-primary bg-primary/10 px-3 py-2">Encrypt & Submit {side}</button>
+        {status && <div className="text-sm">{status}</div>}
+      </form>
     </div>
   );
 }
 
-function Row({ label, value, valueClass = "text-foreground" }: { label: string; value: string; valueClass?: string }) {
-  return (
-    <div className="flex justify-between">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={valueClass}>{value}</span>
-    </div>
-  );
-}
-
-function Field({
-  label, suffix, value, onChange, accent,
-}: { label: string; suffix: string; value: string; onChange: (v: string) => void; accent: "primary" | "destructive" }) {
-  const focusRing = accent === "primary" ? "focus-within:border-primary" : "focus-within:border-destructive";
-  return (
-    <label className="block">
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">{label}</span>
-        <span className="text-[10px] uppercase tracking-widest text-terminal-dim">{suffix}</span>
-      </div>
-      <div className={`flex items-center rounded border border-border bg-background px-3 transition ${focusRing}`}>
-        <span className="mr-2 text-muted-foreground">$</span>
-        <input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="0.00"
-          inputMode="decimal"
-          className="w-full bg-transparent py-2.5 text-base text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
-        />
-        <span className="ml-2 text-[10px] uppercase tracking-widest text-muted-foreground">{suffix}</span>
-      </div>
-    </label>
-  );
-}
-
-export function StatusPill({ status }: { status: string }) {
-  const map: Record<string, string> = {
-    Open: "border-primary/40 text-primary bg-primary/10",
-    Locked: "border-yellow-500/40 text-yellow-500 bg-yellow-500/10",
-    Matched: "border-primary/40 text-primary bg-primary/10",
-    Cancelled: "border-destructive/40 text-destructive bg-destructive/10",
-  };
-  return (
-    <span className={`rounded border px-2 py-0.5 text-[9px] uppercase tracking-widest ${map[status] ?? "border-border text-muted-foreground"}`}>
-      {status}
-    </span>
-  );
-}
+export default Trade;
