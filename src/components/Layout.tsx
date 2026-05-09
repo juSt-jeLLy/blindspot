@@ -6,6 +6,7 @@ const navLinks = [
   { to: "/pools", label: "Pools" },
   { to: "/orders", label: "My Orders" },
   { to: "/activity", label: "Activity" },
+  { to: "/profile", label: "Profile" },
 ] as const;
 
 function shortAddr(a: string) {

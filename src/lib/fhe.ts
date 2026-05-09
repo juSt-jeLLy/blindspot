@@ -1,4 +1,4 @@
-import { hexlify, parseUnits } from "ethers";
+import { AbiCoder, hexlify, parseUnits } from "ethers";
 import type { Signer } from "ethers";
 type RelayerSDK = typeof import("@zama-fhe/relayer-sdk/web");
 type RelayerInstance = Awaited<ReturnType<RelayerSDK["createInstance"]>>;
@@ -71,6 +71,38 @@ export async function encryptOrderInputs(params: {
     encPriceHandle: hexlify(encrypted.handles[0]),
     encSizeHandle: hexlify(encrypted.handles[1]),
     inputProof: hexlify(encrypted.inputProof),
+  };
+}
+
+export async function encryptUint64Input(params: {
+  contractAddress: string;
+  userAddress: string;
+  amountDecimal: string;
+  decimals?: number;
+}) {
+  const relayer = await getRelayerInstance();
+  const decimals = params.decimals ?? 6;
+  const amount = toUint64(parseUnits(params.amountDecimal, decimals), "amount");
+  const input = relayer.createEncryptedInput(params.contractAddress, params.userAddress);
+  input.add64(amount);
+  const encrypted = await input.encrypt();
+  return {
+    encHandle: hexlify(encrypted.handles[0]),
+    inputProof: hexlify(encrypted.inputProof),
+  };
+}
+
+export async function publicDecryptUint64Handle(handle: string) {
+  const relayer = await getRelayerInstance();
+  const result = (await (relayer as any).publicDecrypt([handle])) as {
+    abiEncodedClearValues: string;
+    decryptionProof: string;
+  };
+  const [value] = AbiCoder.defaultAbiCoder().decode(["uint64"], result.abiEncodedClearValues);
+  return {
+    clearValue: BigInt(value.toString()),
+    abiEncodedClearValues: result.abiEncodedClearValues,
+    decryptionProof: result.decryptionProof,
   };
 }
 

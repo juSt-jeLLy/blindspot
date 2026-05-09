@@ -15,6 +15,7 @@ interface IDarkPoolEscrowMatcherSide {
     function rotateSellHead() external;
     function rotateBuyHead() external;
     function releaseMatchLockAndTryNext() external;
+    function settleTransfer(address seller, address buyer, euint64 fillSize) external;
 }
 
 contract DarkPoolMatcher is ZamaEthereumConfig {
@@ -179,7 +180,8 @@ contract DarkPoolMatcher is ZamaEthereumConfig {
         scanAttempts = 0;
 
         euint64 fillSize = FHE.asEuint64(fillSizeClear);
-        settlement.settle(pending.seller, pending.buyer, pending.sellOrderId, pending.buyOrderId, fillSize);
+        FHE.allowTransient(fillSize, address(escrow));
+        escrow.settleTransfer(pending.seller, pending.buyer, fillSize);
 
         if (buyIsSmaller && sellRemainderClear > 0) {
             uint256 remainderId = escrow.fillBuyRequeueSell(

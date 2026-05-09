@@ -1,7 +1,9 @@
 import { TimeAgo } from "@/components/TimeAgo";
 import { ALL_PAIR_KEYS } from "@/lib/contracts-config";
-import { cancelOrder, fetchOrdersForAddress, getBrowserProvider, type ChainOrder } from "@/lib/web3";
+import { decryptHandleForUser } from "@/lib/fhe";
+import { cancelOrder, fetchOrdersForAddress, getBrowserProvider, getOrderEncryptedHandles, type ChainOrder } from "@/lib/web3";
 import { createFileRoute } from "@tanstack/react-router";
+import { formatUnits } from "ethers";
 import { useEffect, useState } from "react";
 import { StatusPill } from "./trade";
 
@@ -11,6 +13,8 @@ function Orders() {
   const [rows, setRows] = useState<ChainOrder[]>([]);
   const [status, setStatus] = useState<string>("Connect wallet to load orders.");
   const [busy, setBusy] = useState<string | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [valueBusy, setValueBusy] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -39,6 +43,42 @@ function Orders() {
     }
   }
 
+  async function onDecryptValue(r: ChainOrder) {
+    try {
+      const key = `${r.pairKey}-${r.orderId}`;
+      setValueBusy(key);
+      const provider = getBrowserProvider();
+      const signer = await provider.getSigner();
+      const owner = await signer.getAddress();
+      const enc = await getOrderEncryptedHandles(r.pairKey, r.orderId);
+      const [priceRaw, sizeRaw] = await Promise.all([
+        decryptHandleForUser({
+          handle: enc.encPrice,
+          contractAddress: enc.escrow,
+          userAddress: owner,
+          signer,
+        }),
+        decryptHandleForUser({
+          handle: enc.encSize,
+          contractAddress: enc.escrow,
+          userAddress: owner,
+          signer,
+        }),
+      ]);
+      const price = Number(formatUnits(priceRaw, 6));
+      const size = Number(formatUnits(sizeRaw, 6));
+      const notional = price * size;
+      setValues((prev) => ({
+        ...prev,
+        [key]: `${price.toFixed(6)} × ${size.toFixed(6)} = ${notional.toFixed(6)}`,
+      }));
+    } catch (e: any) {
+      setStatus(`Decrypt failed: ${e?.message ?? "unknown"}`);
+    } finally {
+      setValueBusy(null);
+    }
+  }
+
   useEffect(() => {
     load();
   }, []);
@@ -56,7 +96,7 @@ function Orders() {
         <table className="w-full text-xs">
           <thead className="border-b border-border bg-background/50 text-muted-foreground">
             <tr>
-              <Th>Order ID</Th><Th>Pair</Th><Th>Side</Th><Th>Status</Th><Th>Timestamp</Th><Th>TX</Th><Th className="text-right">Action</Th>
+              <Th>Order ID</Th><Th>Pair</Th><Th>Side</Th><Th>Status</Th><Th>Value</Th><Th>Timestamp</Th><Th>TX</Th><Th className="text-right">Action</Th>
             </tr>
           </thead>
           <tbody>
@@ -66,10 +106,23 @@ function Orders() {
                 <Td>{o.pairLabel}</Td>
                 <Td className={o.side === "Buy" ? "text-primary" : "text-destructive"}>{o.side}</Td>
                 <Td><StatusPill status={o.status} /></Td>
+                <Td>
+                  {values[`${o.pairKey}-${o.orderId}`] ? (
+                    <span className="font-mono text-[10px] text-foreground">{values[`${o.pairKey}-${o.orderId}`]}</span>
+                  ) : (
+                    <button
+                      onClick={() => onDecryptValue(o)}
+                      disabled={valueBusy === `${o.pairKey}-${o.orderId}`}
+                      className="rounded border border-primary/40 px-2 py-0.5 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10 disabled:opacity-60"
+                    >
+                      {valueBusy === `${o.pairKey}-${o.orderId}` ? "..." : "Decrypt"}
+                    </button>
+                  )}
+                </Td>
                 <Td className="text-muted-foreground"><TimeAgo ts={o.timestamp} /></Td>
                 <Td className="font-mono text-[10px] text-terminal-dim">{o.txHash.slice(0, 10)}...</Td>
                 <Td className="text-right">
-                  {o.status === "Pending" ? (
+                  {o.status === "Pending" || o.status === "Open" || o.status === "PartiallyFilled" ? (
                     <button
                       onClick={() => onCancel(o)}
                       disabled={busy === o.orderId}

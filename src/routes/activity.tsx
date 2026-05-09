@@ -53,6 +53,9 @@ function Activity() {
 
 function EventTag({ type }: { type: ChainActivity["type"] }) {
   const map = {
+    ORDER_SUBMIT_BUY: "border-primary/40 text-primary bg-primary/10",
+    ORDER_SUBMIT_SELL: "border-destructive/40 text-destructive bg-destructive/10",
+    ORDER_CANCELLED: "border-terminal-dim/40 text-terminal-dim bg-terminal-dim/10",
     MATCH_REQUESTED: "border-terminal-dim/40 text-terminal-dim bg-terminal-dim/10",
     MATCHED: "border-primary/40 text-primary bg-primary/10",
     NO_MATCH: "border-destructive/40 text-destructive bg-destructive/10",
