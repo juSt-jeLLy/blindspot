@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TradeRouteImport } from './routes/trade'
+import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as PoolsRouteImport } from './routes/pools'
 import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as ActivityRouteImport } from './routes/activity'
@@ -18,6 +19,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const TradeRoute = TradeRouteImport.update({
   id: '/trade',
   path: '/trade',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProfileRoute = ProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PoolsRoute = PoolsRouteImport.update({
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/activity': typeof ActivityRoute
   '/orders': typeof OrdersRoute
   '/pools': typeof PoolsRoute
+  '/profile': typeof ProfileRoute
   '/trade': typeof TradeRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/activity': typeof ActivityRoute
   '/orders': typeof OrdersRoute
   '/pools': typeof PoolsRoute
+  '/profile': typeof ProfileRoute
   '/trade': typeof TradeRoute
 }
 export interface FileRoutesById {
@@ -61,14 +69,22 @@ export interface FileRoutesById {
   '/activity': typeof ActivityRoute
   '/orders': typeof OrdersRoute
   '/pools': typeof PoolsRoute
+  '/profile': typeof ProfileRoute
   '/trade': typeof TradeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/activity' | '/orders' | '/pools' | '/trade'
+  fullPaths: '/' | '/activity' | '/orders' | '/pools' | '/profile' | '/trade'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/activity' | '/orders' | '/pools' | '/trade'
-  id: '__root__' | '/' | '/activity' | '/orders' | '/pools' | '/trade'
+  to: '/' | '/activity' | '/orders' | '/pools' | '/profile' | '/trade'
+  id:
+    | '__root__'
+    | '/'
+    | '/activity'
+    | '/orders'
+    | '/pools'
+    | '/profile'
+    | '/trade'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -76,6 +92,7 @@ export interface RootRouteChildren {
   ActivityRoute: typeof ActivityRoute
   OrdersRoute: typeof OrdersRoute
   PoolsRoute: typeof PoolsRoute
+  ProfileRoute: typeof ProfileRoute
   TradeRoute: typeof TradeRoute
 }
 
@@ -86,6 +103,13 @@ declare module '@tanstack/react-router' {
       path: '/trade'
       fullPath: '/trade'
       preLoaderRoute: typeof TradeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/profile': {
+      id: '/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof ProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pools': {
@@ -124,6 +148,7 @@ const rootRouteChildren: RootRouteChildren = {
   ActivityRoute: ActivityRoute,
   OrdersRoute: OrdersRoute,
   PoolsRoute: PoolsRoute,
+  ProfileRoute: ProfileRoute,
   TradeRoute: TradeRoute,
 }
 export const routeTree = rootRouteImport

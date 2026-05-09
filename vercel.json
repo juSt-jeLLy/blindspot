@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/resolve-matches",
+      "dest": "/api/resolve-matches.ts"
+    },
+    {
+      "src": "/api/(.*)",
+      "status": 404,
+      "dest": "/api/resolve-matches.ts"
+    },
+    {
+      "src": "/(.*)",
+      "status": 404,
+      "dest": "/api/resolve-matches.ts"
+    }
+  ]
+}

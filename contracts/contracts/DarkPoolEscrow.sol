@@ -37,6 +37,7 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
     event OrderCancelled(uint256 indexed orderId, address indexed trader);
     event MatchTriggered(uint256 indexed sellOrderId, uint256 indexed buyOrderId);
     event RemainderRequeued(uint256 indexed oldOrderId, uint256 indexed newOrderId);
+    event SettledTransfer(address indexed seller, address indexed buyer);
 
     modifier onlyMatcher() {
         require(msg.sender == address(matcher), "only matcher");
@@ -207,6 +208,16 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
         _triggerMatchIfReady();
     }
 
+    function settleTransfer(address seller, address buyer, euint64 fillSize) external onlyMatcher {
+        // The matcher created this handle and grants escrow transient access for this tx.
+        // ERC7984 transfer path also needs token contracts to consume the encrypted amount handle.
+        FHE.allowTransient(fillSize, address(cTokenA));
+        FHE.allowTransient(fillSize, address(cTokenB));
+        cTokenA.confidentialTransfer(buyer, fillSize);
+        cTokenB.confidentialTransfer(seller, fillSize);
+        emit SettledTransfer(seller, buyer);
+    }
+
     function _triggerMatchIfReady() internal {
         if (matchInFlight) return;
 
@@ -240,8 +251,12 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
 
         FHE.allowThis(minPrice);
         FHE.allowThis(sellSize);
+        FHE.allow(minPrice, trader);
+        FHE.allow(sellSize, trader);
         FHE.allow(minPrice, address(matcher));
         FHE.allow(sellSize, address(matcher));
+        // Required by ERC7984 transfer path: token contract must be authorized to consume the encrypted amount handle.
+        FHE.allow(sellSize, address(cTokenA));
 
         if (transferIn) {
             cTokenA.confidentialTransferFrom(trader, address(this), sellSize);
@@ -269,8 +284,12 @@ contract DarkPoolEscrow is ZamaEthereumConfig {
 
         FHE.allowThis(bidPrice);
         FHE.allowThis(buySize);
+        FHE.allow(bidPrice, trader);
+        FHE.allow(buySize, trader);
         FHE.allow(bidPrice, address(matcher));
         FHE.allow(buySize, address(matcher));
+        // Required by ERC7984 transfer path: token contract must be authorized to consume the encrypted amount handle.
+        FHE.allow(buySize, address(cTokenB));
 
         if (transferIn) {
             cTokenB.confidentialTransferFrom(trader, address(this), buySize);
