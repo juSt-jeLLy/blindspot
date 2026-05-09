@@ -1,5 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const navLinks = [
   { to: "/trade", label: "Trade" },
@@ -12,10 +12,110 @@ function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
+function getEthereum(): {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
+} | null {
+  if (typeof window === "undefined") return null;
+  const w = window as Window & { ethereum?: unknown };
+  if (!w.ethereum || typeof w.ethereum !== "object") return null;
+  return w.ethereum as {
+    request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+    on?: (event: string, handler: (...args: unknown[]) => void) => void;
+    removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
+  };
+}
+
+async function switchToSepolia() {
+  const eth = getEthereum();
+  if (!eth) return;
+  try {
+    await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xaa36a7" }] });
+  } catch (err: unknown) {
+    const e = err as { code?: number };
+    if (e?.code === 4902) {
+      await eth.request({
+        method: "wallet_addEthereumChain",
+        params: [{
+          chainId: "0xaa36a7",
+          chainName: "Sepolia",
+          nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
+          rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
+          blockExplorerUrls: ["https://sepolia.etherscan.io"],
+        }],
+      });
+    } else {
+      throw err;
+    }
+  }
+}
+
 export function Layout() {
-  const [wallet, setWallet] = useState<string | null>(
-    "0x4A8b9e2C3dF1a7B6c5E9f0a2D1C3b4E5F6A7B8C9",
-  );
+  const [wallet, setWallet] = useState<string | null>(null);
+  const [chainId, setChainId] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [connected, setConnected] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("blindspot_wallet_connected") === "1";
+  });
+
+  async function connectWallet() {
+    const eth = getEthereum();
+    if (!eth) return;
+    const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+    const cid = (await eth.request({ method: "eth_chainId" })) as string;
+    setWallet(accounts[0] ?? null);
+    setChainId(cid);
+    setConnected(true);
+    if (typeof window !== "undefined") window.localStorage.setItem("blindspot_wallet_connected", "1");
+  }
+
+  async function refreshWallet() {
+    const eth = getEthereum();
+    if (!eth) return;
+    const accounts = (await eth.request({ method: "eth_accounts" })) as string[];
+    const cid = (await eth.request({ method: "eth_chainId" })) as string;
+    setWallet(accounts[0] ?? null);
+    setChainId(cid);
+  }
+
+  async function switchAccount() {
+    setMenuOpen(false);
+    await connectWallet();
+  }
+
+  function disconnectWallet() {
+    setMenuOpen(false);
+    setWallet(null);
+    setConnected(false);
+    if (typeof window !== "undefined") window.localStorage.removeItem("blindspot_wallet_connected");
+  }
+
+  useEffect(() => {
+    if (connected) refreshWallet();
+    const eth = getEthereum();
+    if (!eth?.on) return;
+
+    const onAccountsChanged = (accounts: unknown) => {
+      const next = Array.isArray(accounts) ? (accounts[0] as string | undefined) : undefined;
+      setWallet(next ?? null);
+    };
+    const onChainChanged = (cid: unknown) => {
+      if (typeof cid === "string") setChainId(cid);
+    };
+
+    eth.on("accountsChanged", onAccountsChanged);
+    eth.on("chainChanged", onChainChanged);
+
+    return () => {
+      if (!eth.removeListener) return;
+      eth.removeListener("accountsChanged", onAccountsChanged);
+      eth.removeListener("chainChanged", onChainChanged);
+    };
+  }, [connected]);
+
+  const onSepolia = chainId?.toLowerCase() === "0xaa36a7";
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -37,29 +137,29 @@ export function Layout() {
               </Link>
             ))}
           </nav>
-          <div className="flex items-center gap-2 text-xs">
+          <div className="relative flex items-center gap-2 text-xs">
             {wallet ? (
               <>
                 <span className="rounded border border-primary/40 bg-primary/10 px-2 py-1 text-primary">
-                  {shortAddr(wallet)}
+                  <button onClick={() => setMenuOpen((v) => !v)} className="cursor-pointer">
+                    {shortAddr(wallet)}
+                  </button>
                 </span>
-                <span className="rounded border border-terminal-dim/40 px-2 py-1 text-terminal-dim">
-                  SEPOLIA
+                {menuOpen && (
+                  <div className="absolute right-0 top-10 z-50 min-w-44 rounded border border-primary/30 bg-background p-1 shadow-xl">
+                    <button onClick={switchAccount} className="block w-full rounded px-3 py-2 text-left text-xs uppercase tracking-wider text-foreground hover:bg-primary/10">Switch Account</button>
+                    <button onClick={disconnectWallet} className="block w-full rounded px-3 py-2 text-left text-xs uppercase tracking-wider text-destructive hover:bg-destructive/10">Disconnect</button>
+                  </div>
+                )}
+                <span className={`rounded border px-2 py-1 ${onSepolia ? "border-terminal-dim/40 text-terminal-dim" : "border-destructive/40 text-destructive"}`}>
+                  {onSepolia ? "SEPOLIA" : "WRONG NET"}
                 </span>
-                <button
-                  onClick={() => setWallet(null)}
-                  className="rounded border border-border px-2 py-1 text-muted-foreground hover:border-destructive hover:text-destructive"
-                >
-                  ✕
-                </button>
+                {!onSepolia && (
+                  <button onClick={switchToSepolia} className="rounded border border-primary/40 bg-primary/10 px-2 py-1 text-primary hover:bg-primary/20">SWITCH</button>
+                )}
               </>
             ) : (
-              <button
-                onClick={() => setWallet("0x4A8b9e2C3dF1a7B6c5E9f0a2D1C3b4E5F6A7B8C9")}
-                className="rounded border border-primary bg-primary/10 px-3 py-1 text-primary hover:bg-primary/20"
-              >
-                CONNECT WALLET
-              </button>
+              <button onClick={connectWallet} className="rounded border border-primary bg-primary/10 px-3 py-1 text-primary hover:bg-primary/20">CONNECT WALLET</button>
             )}
           </div>
         </div>
@@ -70,20 +170,7 @@ export function Layout() {
       </main>
 
       <footer className="border-t border-border bg-card">
-        <div className="border-b border-destructive/40 bg-destructive/10 py-2 text-center text-xs text-destructive">
-          ⚠ TESTNET ONLY — Sepolia. Tokens have no real value.
-        </div>
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-6 text-xs text-muted-foreground md:flex-row md:justify-between">
-          <div>
-            <span className="text-primary">⬛ BLINDSPOT</span> · encrypted matching for institutional flow
-          </div>
-          <div className="flex gap-4">
-            <a href="#" className="hover:text-primary">Docs</a>
-            <a href="#" className="hover:text-primary">GitHub</a>
-            <a href="#" className="hover:text-primary">Contracts</a>
-            <a href="#" className="hover:text-primary">Discord</a>
-          </div>
-        </div>
+        <div className="border-b border-destructive/40 bg-destructive/10 py-2 text-center text-xs text-destructive">⚠ TESTNET ONLY — Sepolia. Tokens have no real value.</div>
       </footer>
     </div>
   );

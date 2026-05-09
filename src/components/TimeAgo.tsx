@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { timeAgo } from "@/lib/mock";
+import { timeAgo } from "@/lib/time";
 
 export function TimeAgo({ ts }: { ts: number }) {
   const [label, setLabel] = useState("…");
