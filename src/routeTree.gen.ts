@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TradeRouteImport } from './routes/trade'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as PoolsRouteImport } from './routes/pools'
+import { Route as PerpsRouteImport } from './routes/perps'
 import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
@@ -29,6 +30,11 @@ const ProfileRoute = ProfileRouteImport.update({
 const PoolsRoute = PoolsRouteImport.update({
   id: '/pools',
   path: '/pools',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PerpsRoute = PerpsRouteImport.update({
+  id: '/perps',
+  path: '/perps',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OrdersRoute = OrdersRouteImport.update({
@@ -51,6 +57,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/orders': typeof OrdersRoute
+  '/perps': typeof PerpsRoute
   '/pools': typeof PoolsRoute
   '/profile': typeof ProfileRoute
   '/trade': typeof TradeRoute
@@ -59,6 +66,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/orders': typeof OrdersRoute
+  '/perps': typeof PerpsRoute
   '/pools': typeof PoolsRoute
   '/profile': typeof ProfileRoute
   '/trade': typeof TradeRoute
@@ -68,20 +76,36 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
   '/orders': typeof OrdersRoute
+  '/perps': typeof PerpsRoute
   '/pools': typeof PoolsRoute
   '/profile': typeof ProfileRoute
   '/trade': typeof TradeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/activity' | '/orders' | '/pools' | '/profile' | '/trade'
+  fullPaths:
+    | '/'
+    | '/activity'
+    | '/orders'
+    | '/perps'
+    | '/pools'
+    | '/profile'
+    | '/trade'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/activity' | '/orders' | '/pools' | '/profile' | '/trade'
+  to:
+    | '/'
+    | '/activity'
+    | '/orders'
+    | '/perps'
+    | '/pools'
+    | '/profile'
+    | '/trade'
   id:
     | '__root__'
     | '/'
     | '/activity'
     | '/orders'
+    | '/perps'
     | '/pools'
     | '/profile'
     | '/trade'
@@ -91,6 +115,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
   OrdersRoute: typeof OrdersRoute
+  PerpsRoute: typeof PerpsRoute
   PoolsRoute: typeof PoolsRoute
   ProfileRoute: typeof ProfileRoute
   TradeRoute: typeof TradeRoute
@@ -117,6 +142,13 @@ declare module '@tanstack/react-router' {
       path: '/pools'
       fullPath: '/pools'
       preLoaderRoute: typeof PoolsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/perps': {
+      id: '/perps'
+      path: '/perps'
+      fullPath: '/perps'
+      preLoaderRoute: typeof PerpsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/orders': {
@@ -147,6 +179,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
   OrdersRoute: OrdersRoute,
+  PerpsRoute: PerpsRoute,
   PoolsRoute: PoolsRoute,
   ProfileRoute: ProfileRoute,
   TradeRoute: TradeRoute,

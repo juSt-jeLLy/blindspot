@@ -41,6 +41,22 @@ const WRAPPER_ABI = [
   "event UnwrapFinalized(address indexed receiver, bytes32 indexed unwrapRequestId, bytes32 encryptedAmount, uint64 cleartextAmount)",
 ] as const;
 const wrapperByUnderlyingCache = new Map<string, string>();
+const PERP_PM_ABI = [
+  "function depositCollateral(uint64 amount)",
+  "function withdrawCollateral(uint64 amount)",
+  "function openPosition(bytes32 encSize, bytes sizeProof, bytes32 encLeverageE6, bytes levProof, bool isLong, uint64 collateralToLock)",
+  "function closePosition()",
+  "function freeCollateral(address owner) view returns (uint64)",
+  "function getPosition(address owner) view returns (bool isOpen, bool isLong, uint64 collateralUsdc, uint64 entryPrice1e8, bytes32 size, bytes32 leverageE6)",
+] as const;
+
+const PERP_LIQ_ABI = [
+  "function requestLiquidationCheck(address user) returns (uint256)",
+] as const;
+export type PerpMarketKey = keyof typeof CONTRACTS.perps.markets;
+function getPerpMarket(marketKey: PerpMarketKey) {
+  return CONTRACTS.perps.markets[marketKey];
+}
 
 export type Side = "Buy" | "Sell";
 export type OrderStatus = "Pending" | "Open" | "PartiallyFilled" | "Filled" | "Cancelled" | "Refunded" | "Unknown";
@@ -591,4 +607,135 @@ export async function fetchActivity(pairKeys: PairKey[]): Promise<ChainActivity[
 
   for (const row of result) row.timestamp = ts.get(row.blockNumber) ?? Date.now();
   return result.sort((a, b) => b.blockNumber - a.blockNumber).slice(0, 100);
+}
+
+export async function approveConfidentialForPerpManager(args: { cToken: string; positionManager: string }) {
+  const provider = getBrowserProvider();
+  const signer = await provider.getSigner();
+  const c = new ethers.Contract(args.cToken, WRAPPER_ABI, signer);
+  const now = Math.floor(Date.now() / 1000);
+  const until = now + 365 * 24 * 60 * 60;
+  const tx = await c.setOperator(args.positionManager, until);
+  await tx.wait();
+  return { txHash: tx.hash as string };
+}
+
+export async function getPerpFundingStatus(args: { owner: string; signer?: ethers.Signer; marketKey: PerpMarketKey }) {
+  const cToken = CONTRACTS.perps.collateralToken;
+  const positionManager = getPerpMarket(args.marketKey).positionManager;
+  const provider = getRpcProvider();
+  const cRead = new ethers.Contract(cToken, WRAPPER_ABI, provider);
+  const cCaller = new ethers.Contract(cToken, WRAPPER_ABI, args.signer ?? provider);
+  const pm = new ethers.Contract(positionManager, PERP_PM_ABI, provider);
+  let encryptedHandle: string;
+  try {
+    encryptedHandle = String(await cCaller.confidentialBalanceOf(args.owner));
+  } catch {
+    encryptedHandle = String(await cRead.confidentialBalanceOf(args.owner));
+  }
+  let operatorEnabled = false;
+  try {
+    operatorEnabled = Boolean(await cRead.isOperator(args.owner, positionManager));
+  } catch {}
+
+  const freeCollateralRaw = await pm.freeCollateral(args.owner);
+  return {
+    cToken,
+    positionManager,
+    encryptedHandle,
+    operatorEnabled,
+    freeCollateral: ethers.formatUnits(freeCollateralRaw, 6),
+  };
+}
+
+export async function perpDepositCollateral(marketKey: PerpMarketKey, amountHuman: string) {
+  const provider = getBrowserProvider();
+  const signer = await provider.getSigner();
+  const pm = new ethers.Contract(getPerpMarket(marketKey).positionManager, PERP_PM_ABI, signer);
+  const amount = ethers.parseUnits(amountHuman, 6);
+  const tx = await pm.depositCollateral(amount);
+  await tx.wait();
+  return { txHash: tx.hash as string };
+}
+
+export async function perpWithdrawCollateral(marketKey: PerpMarketKey, amountHuman: string) {
+  const provider = getBrowserProvider();
+  const signer = await provider.getSigner();
+  const pm = new ethers.Contract(getPerpMarket(marketKey).positionManager, PERP_PM_ABI, signer);
+  const amount = ethers.parseUnits(amountHuman, 6);
+  const tx = await pm.withdrawCollateral(amount);
+  await tx.wait();
+  return { txHash: tx.hash as string };
+}
+
+export async function perpOpenPosition(args: {
+  marketKey: PerpMarketKey;
+  isLong: boolean;
+  collateralToLockHuman: string;
+  sizeHuman: string;
+  leverageX: string;
+}) {
+  const provider = getBrowserProvider();
+  const signer = await provider.getSigner();
+  const userAddress = await signer.getAddress();
+  const pmAddr = getPerpMarket(args.marketKey).positionManager;
+  const pm = new ethers.Contract(pmAddr, PERP_PM_ABI, signer);
+
+  const sizeEnc = await encryptUint64Input({
+    contractAddress: pmAddr,
+    userAddress,
+    amountDecimal: args.sizeHuman,
+    decimals: 6,
+  });
+  const levScaled = (Number(args.leverageX) * 1_000_000).toString();
+  const levEnc = await encryptUint64Input({
+    contractAddress: pmAddr,
+    userAddress,
+    amountDecimal: levScaled,
+    decimals: 0,
+  });
+  const collateralToLock = ethers.parseUnits(args.collateralToLockHuman, 6);
+
+  const tx = await pm.openPosition(
+    sizeEnc.encHandle,
+    sizeEnc.inputProof,
+    levEnc.encHandle,
+    levEnc.inputProof,
+    args.isLong,
+    collateralToLock,
+  );
+  await tx.wait();
+  return { txHash: tx.hash as string };
+}
+
+export async function perpClosePosition(marketKey: PerpMarketKey) {
+  const provider = getBrowserProvider();
+  const signer = await provider.getSigner();
+  const pm = new ethers.Contract(getPerpMarket(marketKey).positionManager, PERP_PM_ABI, signer);
+  const tx = await pm.closePosition();
+  await tx.wait();
+  return { txHash: tx.hash as string };
+}
+
+export async function getPerpPosition(marketKey: PerpMarketKey, owner: string) {
+  const provider = getRpcProvider();
+  const pm = new ethers.Contract(getPerpMarket(marketKey).positionManager, PERP_PM_ABI, provider);
+  const p = await pm.getPosition(owner);
+  return {
+    isOpen: Boolean(p.isOpen),
+    isLong: Boolean(p.isLong),
+    collateralUsdc: ethers.formatUnits(p.collateralUsdc, 6),
+    entryPrice: (Number(p.entryPrice1e8) / 1e8).toString(),
+    sizeHandle: String(p.size),
+    leverageHandle: String(p.leverageE6),
+  };
+}
+
+export async function requestPerpLiquidationCheck(marketKey: PerpMarketKey, user: string) {
+  const provider = getBrowserProvider();
+  const signer = await provider.getSigner();
+  const liq = new ethers.Contract(getPerpMarket(marketKey).liquidationEngine, PERP_LIQ_ABI, signer);
+  const tx = await liq.requestLiquidationCheck(user);
+  await tx.wait();
+  return { txHash: tx.hash as string };
 }

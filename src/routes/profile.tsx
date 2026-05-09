@@ -1,9 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { CONTRACTS } from "@/lib/contracts-config";
 import {
+  approveConfidentialForPerpManager,
   getBrowserProvider,
   getConfidentialTokenStatus,
   getConfidentialTokens,
+  getPerpFundingStatus,
+  perpDepositCollateral,
+  perpWithdrawCollateral,
   unwrapConfidentialToUnderlying,
 } from "@/lib/web3";
 import { decryptHandleForUser } from "@/lib/fhe";
@@ -38,6 +43,8 @@ function ProfilePage() {
   const [busy, setBusy] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [perpAmount, setPerpAmount] = useState("5");
+  const [perpStatus, setPerpStatus] = useState<any>(null);
 
   const current = useMemo(
     () => tokens.find((t) => t.cToken.toLowerCase() === selected.toLowerCase()) ?? null,
@@ -69,6 +76,12 @@ function ProfilePage() {
       }
 
       setTokens(next);
+      try {
+        const p = await getPerpFundingStatus({ owner, signer, marketKey: "WETH_PERP" });
+        setPerpStatus(p);
+      } catch {
+        setPerpStatus(null);
+      }
       if (!selected && next.length > 0) {
         setSelected(next[0].cToken);
       } else if (selected && !next.some((t) => t.cToken.toLowerCase() === selected.toLowerCase())) {
@@ -155,6 +168,41 @@ function ProfilePage() {
   useEffect(() => {
     load();
   }, []);
+
+  async function preparePerpWallet() {
+    if (!wallet) return;
+    setBusy(true);
+    setStatus("Preparing perp wallet...");
+    try {
+      await approveConfidentialForPerpManager({
+        cToken: perpStatus?.cToken,
+        positionManager: CONTRACTS.perps.markets.WETH_PERP.positionManager,
+      });
+      await perpDepositCollateral("WETH_PERP", perpAmount);
+      setStatus("✓ Perp wallet funded");
+      await load();
+    } catch (e: any) {
+      setGlobalError(e?.message ?? "perp funding failed");
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function withdrawPerpWallet() {
+    setBusy(true);
+    setStatus("Withdrawing from perp wallet...");
+    try {
+      await perpWithdrawCollateral("WETH_PERP", perpAmount);
+      setStatus("✓ Perp wallet withdrawn");
+      await load();
+    } catch (e: any) {
+      setGlobalError(e?.message ?? "perp withdraw failed");
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
@@ -246,6 +294,40 @@ function ProfilePage() {
         ) : (
           <div className="text-sm text-muted-foreground">No confidential tokens configured.</div>
         )}
+      </div>
+
+      <div className="rounded border border-border bg-card p-4">
+        <div className="mb-3 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">Perps Wallet</div>
+        <div className="grid grid-cols-1 gap-2 text-sm md:grid-cols-2">
+          <div className="text-muted-foreground">Collateral Token</div>
+          <div>{perpStatus?.cToken ? `${perpStatus.cToken.slice(0, 8)}...${perpStatus.cToken.slice(-6)}` : "—"}</div>
+          <div className="text-muted-foreground">PM Permission</div>
+          <div>{perpStatus ? (perpStatus.operatorEnabled ? "Enabled" : "Not enabled") : "—"}</div>
+          <div className="text-muted-foreground">Free Margin</div>
+          <div>{perpStatus?.freeCollateral ?? "—"} cUSDC</div>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <input
+            value={perpAmount}
+            onChange={(e) => setPerpAmount(e.target.value)}
+            className="w-full rounded border border-border bg-background px-3 py-2 text-sm"
+            placeholder="Amount (USDC)"
+          />
+          <button
+            disabled={busy}
+            onClick={preparePerpWallet}
+            className="rounded border border-primary px-3 py-2 text-xs uppercase tracking-wider text-primary disabled:opacity-60"
+          >
+            Enable + Deposit
+          </button>
+          <button
+            disabled={busy}
+            onClick={withdrawPerpWallet}
+            className="rounded border border-border px-3 py-2 text-xs uppercase tracking-wider disabled:opacity-60"
+          >
+            Withdraw
+          </button>
+        </div>
       </div>
     </div>
   );

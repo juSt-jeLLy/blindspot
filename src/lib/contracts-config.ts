@@ -56,6 +56,46 @@ export const CONTRACTS = {
       settlement: "0x6ACDAd8CF958ee1e666ec8EdE24f10CC724cA25D",
     },
   },
+  perps: {
+    coreFactory: "0xbf165c4320E1FB9864FF147D0AD8BE028fbAf0c6",
+    marketFactory: "0x40762e3273B8a8DE9Cd6cD73736B708536313814",
+    router: "0x755d684604923A6B0fb968428D777CbE01f7334b",
+    tradingEngine: "0x6845fCcBdE8d4482C3FF78e6Db8D0e4F1f01f013",
+    collateralToken: "0xe07D85837E18025B07052b7A8568bAe01837CfD9", // cUSDC
+    collateralSymbol: "cUSDC",
+    markets: {
+      WETH_PERP: {
+        symbol: "WETH-PERP",
+        key: "0xf3e0e022a981fa26bd580fe2b59fec7b9c7dc2c749b05f8281279b1e061c9bc5",
+        oracle: "0x4cE490953e624A8B9151500B90D795015f3eafE1",
+        positionManager: "0xA18a5C9a0aEe6ad39D9B6a5E9E22BBf2c2871048",
+        liquidationEngine: "0xC1a56DE2B550bD91b15eB951a25f95a52a949cC9",
+        orderBook: "0xf5c27d575fc905E83Ea3E037EEF5adad8F2CC514",
+        matcher: "0x178422744CFA5Df4E0DE699425aD6f3B2396CF8B",
+        clearing: "0x9396e41fb2BC309e153689A9bb651A12dEf597FF",
+      },
+      WBTC_PERP: {
+        symbol: "WBTC-PERP",
+        key: "0xc8b3ab11c1f2f6f3b839d869bc45f981b1887cba1f7a43247feb6c6acca5a728",
+        oracle: "0x8C05D310463B57AB0DD571b82E87829477df6e72",
+        positionManager: "0x1d71E98A4479b8C3cdc5C6aAB24D5D29fB7e2063",
+        liquidationEngine: "0xF10667890F948F72213Ff326Fc2F0e1bc515ec29",
+        orderBook: "0x7a9198E5bF25b837588f9cC99206Ee2Ff151BE5d",
+        matcher: "0x264d1c83BbC73Ece5ac08f9973Ce69Ba14d5c978",
+        clearing: "0x007D32cCaAf9e0Dd8f6E395242AC1F82cE87d484",
+      },
+      LINK_PERP: {
+        symbol: "LINK-PERP",
+        key: "0xee1f72180c4d0e7c072ecc05b3aa85b405714f1fc6fd022fe86baf8134cedeba",
+        oracle: "0xD01A65EB00D46e6196Aa0d89A447A4339d08bEc9",
+        positionManager: "0x0A499bc1bd404b8460e0Ad178071d03bdcE3BB5d",
+        liquidationEngine: "0x3a037f6DdAece2100406A0Ba463F1042f435D05d",
+        orderBook: "0x8d53EaB4CCE7ab7E81830F44DE08b2e76A51C3cc",
+        matcher: "0xb67938d1cbf00a70d4A15D575C72EDe838fabd22",
+        clearing: "0xc8eccBeF1BfD214bc2aF03244B870c7cA5eC800D",
+      },
+    },
+  },
 } as const;
 
 export type PairKey = keyof typeof CONTRACTS.pairs;
