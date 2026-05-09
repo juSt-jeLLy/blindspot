@@ -6,12 +6,14 @@ type RelayerInstance = Awaited<ReturnType<RelayerSDK["createInstance"]>>;
 let instancePromise: Promise<RelayerInstance> | null = null;
 
 function getNetworkForRelayer(): string | object {
+  const env = (import.meta as ImportMeta & { env?: Record<string, string> }).env;
+  const envRpc = env?.VITE_SEPOLIA_RPC_URL;
+  if (envRpc && envRpc.trim().length > 0) return envRpc.trim();
   if (typeof window !== "undefined") {
     const w = window as Window & { ethereum?: unknown };
     if (w.ethereum && typeof w.ethereum === "object") return w.ethereum;
   }
-  const env = (import.meta as ImportMeta & { env?: Record<string, string> }).env;
-  return env?.VITE_SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com";
+  throw new Error("VITE_SEPOLIA_RPC_URL is required");
 }
 
 async function getRelayerInstance(): Promise<RelayerInstance> {

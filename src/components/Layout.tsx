@@ -31,18 +31,21 @@ function getEthereum(): {
 async function switchToSepolia() {
   const eth = getEthereum();
   if (!eth) return;
+  const env = (import.meta as ImportMeta & { env?: Record<string, string> }).env;
+  const sepoliaRpc = env?.VITE_SEPOLIA_RPC_URL?.trim();
   try {
     await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xaa36a7" }] });
   } catch (err: unknown) {
     const e = err as { code?: number };
     if (e?.code === 4902) {
+      if (!sepoliaRpc) throw new Error("VITE_SEPOLIA_RPC_URL is required");
       await eth.request({
         method: "wallet_addEthereumChain",
         params: [{
           chainId: "0xaa36a7",
           chainName: "Sepolia",
           nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
-          rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
+          rpcUrls: [sepoliaRpc],
           blockExplorerUrls: ["https://sepolia.etherscan.io"],
         }],
       });
