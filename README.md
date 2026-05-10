@@ -1,7 +1,6 @@
 # Blindspot
 
-Blindspot is a confidential dark-pool style spot trading dApp built on Sepolia using Zama FHEVM primitives.  
-It enables users to submit encrypted order parameters while matching and settlement are resolved on-chain with proof-backed decryption callbacks.
+Blindspot is an FHE-powered dark pool DEX on Ethereum Sepolia where order price and size stay fully encrypted on-chain until matched. Built on the Zama Protocol, it uses ERC7984 confidential token wrappers and euint64 encrypted order types so neither traders nor validators can see order details — only the matching engine resolves trades using FHE operations, with settlement happening without ever exposing raw values.
 
 ## Problem Blindspot Solves
 
