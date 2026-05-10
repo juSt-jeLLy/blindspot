@@ -1,234 +1,203 @@
 # Blindspot
 
-Blindspot is an FHE-powered dark pool DEX on Ethereum Sepolia where order price and size stay fully encrypted on-chain until matched. Built on the Zama Protocol, it uses ERC7984 confidential token wrappers and euint64 encrypted order types so neither traders nor validators can see order details — only the matching engine resolves trades using FHE operations, with settlement happening without ever exposing raw values.
+Confidential FX settlement and cross-border payment matching on FHEVM.
 
-## Problem Blindspot Solves
+Blindspot is an FHE-powered dark-pool rail for settling large FX-style orders without revealing trade size or limit price to the market before execution. A corporate, treasury desk, or liquidity provider submits encrypted order parameters; the matching engine compares encrypted bids and offers with TFHE/FHEVM operations, computes encrypted fill amounts and encrypted remainders, and settles through confidential ERC-20 wrappers.
 
-Public DeFi execution leaks strategy-critical data before and during execution:
+The core idea: public blockchains should verify settlement, not leak the order book.
 
-- Order parameters become visible to observers and bots.
-- Transaction ordering can be exploited by MEV searchers.
-- Large or sensitive flows are hard to execute without signaling intent.
+## Why This Matters
 
-Blindspot addresses this by keeping the **most sensitive trade values encrypted** across order entry and match resolution, while still preserving composability and verifiable on-chain settlement.
+Cross-border payments and corporate FX execution often expose enough pre-trade information for liquidity providers, market makers, or intermediaries to infer intent and shade prices. Large visible order sizes can move the market before the trade is complete.
 
-## Privacy-First Model
+Blindspot removes the most sensitive values from public view:
 
-Blindspot is designed so sensitive execution values remain encrypted throughout the lifecycle.
+- order size is encrypted,
+- target or limit rate is encrypted,
+- fill-size arithmetic happens under FHE,
+- partial-fill remainders are requeued without revealing the original or remaining amount,
+- settlement is verifiable while numeric trade intent stays confidential.
 
-### What stays private
+## What Is Implemented
 
-- Order numeric intent (price and size inputs).
-- Fill-size arithmetic and remainder computations in match resolution.
-- Confidential trading balances held in `cToken` form.
-- User-owned confidential value reads, only via wallet-authorized decrypt flow.
+The current codebase implements a working FHEVM dark-pool model on Ethereum Sepolia:
 
-### Why this matters
+- client-side encryption using `@zama-fhe/relayer-sdk`,
+- encrypted buy and sell order submission,
+- confidential ERC-20 wrapper funding,
+- FIFO queues per trading pair,
+- encrypted price comparison,
+- encrypted minimum-size selection,
+- encrypted remainder computation for partial fills,
+- proof-verified resolver callback using `FHE.checkSignatures`,
+- requeueing of partial-fill remainder orders,
+- frontend routes for trading, orders, pools, activity, and profile decrypt/unwrap flows,
+- Vercel API cron endpoint for resolving pending match requests.
 
-- Reduces direct strategy leakage from public order values.
-- Limits intent visibility that typically enables predatory execution behavior.
-- Keeps settlement verifiable while protecting sensitive trading parameters.
+Today the Solidity contracts use `euint64` for encrypted price and size handles. The FX rail framing maps naturally to `encryptedRate` and `encryptedAmount`; moving amount fields to `euint128` is a clear extension path for larger institutional notional values.
 
-## Frontend ↔ Contract Flow
-
-This is the exact integration path between UI and smart contracts.
-
-### 1) Pair and side selection
-
-Frontend determines side-specific funding route:
-
-- Buy side -> quote-asset funding path
-- Sell side -> base-asset funding path
-
-Then reads matcher/escrow addresses and funding readiness.
-
-### 2) Funding sequence (user-signed txs)
-
-1. Approve underlying token to wrapper
-2. Wrap underlying -> confidential token (`cToken`)
-3. Approve/allow escrow path for spending
-
-### 3) Encrypted order submission
-
-Frontend encrypts numeric order values client-side and submits encrypted handles:
-
-- buy submit path for buy intent
-- sell submit path for sell intent
-
-### 4) Pending request resolution
-
-Resolver API (cron-triggered) scans pending requests and calls matcher `resolveMatchWithProof` using proof payload from relayer/gateway flow.
-
-### 5) Settlement and balance updates
-
-Contracts apply fill math, preserve remainders for partial fills, update statuses, and maintain confidential balance accounting.
-
-### 6) User decrypt + unwrap
-
-Profile flow allows wallet-authorized decrypt and optional unwrap back to underlying ERC-20.
-
-## User Flow (App)
+## System Flow
 
 ```mermaid
 flowchart TD
-  A[Connect Wallet] --> B[Select Pair + Side]
-  B --> C[Prepare Funding]
-  C --> C1[Approve Underlying]
-  C1 --> C2[Wrap to cToken]
-  C2 --> C3[Approve Escrow Path]
-  C3 --> D[Enter Price + Size]
-  D --> E[Encrypt + Submit Order]
-  E --> F[Order appears as OPEN]
-  F --> G[Resolver processes pending matches]
-  G --> H{Matched?}
-  H -->|No| F
-  H -->|Partial| I[Order remains OPEN with remainder]
-  I --> G
-  H -->|Full| J[Order FILLED]
-  F --> K[Optional: Cancel OPEN order]
-  J --> L[Profile: Decrypt/Unwrap balance]
-  K --> L
+  A["Trader or Corporate Wallet"] --> B["Select pair and side"]
+  B --> C["Approve underlying token"]
+  C --> D["Wrap into confidential token"]
+  D --> E["Approve escrow operator"]
+  E --> F["Encrypt rate and size client-side"]
+  F --> G["Submit encrypted order to escrow"]
+  G --> H["Escrow queues buy/sell order"]
+  H --> I["Matcher receives head orders"]
+  I --> J["FHE compare rates and compute fill/remainders"]
+  J --> K["Pending match request"]
+  K --> L["Resolver obtains public decrypt proof"]
+  L --> M["Matcher verifies proof"]
+  M --> N{"Rate matched?"}
+  N -->|"No"| O["Rotate queue and try next"]
+  N -->|"Yes"| P["Confidential transfer settlement"]
+  P --> Q{"Partial fill?"}
+  Q -->|"No"| R["Mark both orders filled"]
+  Q -->|"Yes"| S["Requeue encrypted remainder"]
 ```
 
-## Trading Engine Flow (Contracts)
+## Encrypted Matching Logic
 
-```mermaid
-flowchart LR
-  U[Trader] --> FE[Frontend]
-  FE -->|Encrypted submit| M[DarkPoolMatcher]
+For each buy/sell head pair, the matcher computes:
 
-  M -->|creates pending request| PM[Pending Match]
-  PM --> R[Resolver API Cron]
-  R --> Z[Relayer/Gateway]
-  Z -->|cleartexts + proof| M
-
-  M -->|validated resolution| E[DarkPoolEscrow]
-  E --> S[Settlement Update]
-  S --> O[Order State: OPEN / PARTIAL / FILLED / CANCELED]
-  E --> B[Confidential Balances]
+```solidity
+ebool priceMatched = FHE.ge(buyPrice, sellPrice);
+ebool buyIsSmaller = FHE.le(buySize, sellSize);
+euint64 fillSize = FHE.select(buyIsSmaller, buySize, sellSize);
+euint64 sellRemainder = FHE.sub(sellSize, fillSize);
+euint64 buyRemainder = FHE.sub(buySize, fillSize);
 ```
 
-## Partial Fill Behavior
+The resolver later decrypts only the match decision and settlement-control values needed for the state transition, with proof verification bound to the exact ciphertext handles. Raw order input handles remain confidential, and partial-fill accounting is produced from encrypted arithmetic rather than plaintext order-book math.
 
-Blindspot supports partial fills natively:
+## Partial Fills
 
-- If one side is larger, matcher settles the executable overlap.
-- Remaining quantity stays open as remainder on larger order.
-- Remainder can match against future counterpart orders.
-- If no counterpart is found, order remains open/pending.
-- Trader can cancel open orders; contract releases remaining flow accordingly.
+Partial fills are the main technical differentiator.
 
-This allows many floating orders per pair to be matched progressively over time.
+If a buyer wants 10 units and the seller offers 6, the matcher computes the 6-unit fill and a 4-unit encrypted buyer remainder. The original larger order is marked `PartiallyFilled`, a new remainder order is created with the encrypted remainder, and that remainder stays at the queue head for subsequent matching.
 
-## Public Metadata (Expected on Public Chains)
+This enables multi-round encrypted order-book logic instead of a one-shot private swap.
 
-Some metadata remains public by design of public blockchains:
+## Architecture
 
-- wallet addresses
-- tx hashes and timestamps
-- pair IDs and order IDs
-- lifecycle state transitions
+- `contracts/contracts/DarkPoolEscrow.sol` handles encrypted order intake, queues, escrowed balances, cancellation, settlement transfer calls, and remainder requeueing.
+- `contracts/contracts/DarkPoolMatcher.sol` performs FHE comparisons, fill selection, remainder computation, pending request creation, proof verification, queue rotation, and match resolution.
+- `contracts/contracts/DarkPoolSettlement.sol` contains the settlement abstraction used by the matcher/pair deployment model.
+- `contracts/contracts/DarkPoolFactory.sol` deploys and indexes token wrappers and pair-specific escrow/matcher/settlement contracts.
+- `src/lib/fhe.ts` initializes the Zama relayer SDK, encrypts order inputs, and supports user decrypt flows.
+- `src/lib/web3.ts` contains browser wallet and contract interaction helpers.
+- `src/routes/trade.tsx` implements the funding and encrypted order submission UI.
+- `api/resolve-matches.ts` is the cron-safe resolver endpoint that sweeps pending matcher requests and submits proof-backed callbacks.
 
-Blindspot intentionally keeps these public rails while encrypting the strategy-sensitive numeric layer.
+## Public vs Confidential Data
 
-## System Architecture
+Confidential:
 
-```mermaid
-flowchart LR
-  U[User Wallet] --> FE[Frontend App]
-  FE -->|Approve / Wrap / Submit Encrypted Order| C[(Sepolia Contracts)]
+- order price/rate input,
+- order size/amount input,
+- fill-size arithmetic before resolution,
+- remainder arithmetic,
+- confidential token balances,
+- user balance reads unless wallet-authorized.
 
-  subgraph Onchain
-    C --> M[DarkPoolMatcher]
-    C --> E[DarkPoolEscrow]
-    C --> S[Settlement Modules]
-    M --> P[Pending Match Requests]
-  end
+Public:
 
-  P --> R[Resolver API Cron]
-  R --> G[Relayer + Gateway Proof Flow]
-  G -->|cleartexts + proof| M
-  M --> S
-  S --> E
-  E --> B[Confidential Balances Updated]
+- wallet addresses,
+- pair addresses,
+- order IDs,
+- transaction hashes,
+- lifecycle events,
+- whether a pending match ultimately matched,
+- clear settlement-control values returned through the proof flow.
 
-  FE -->|Read status/events| C
-  FE -->|User-authorized decrypt/unwrap| E
+This is a pragmatic FHEVM design: it keeps strategy-critical numeric intent private while allowing the chain to verify and progress state.
+
+## Repository Layout
+
+```text
+.
+|-- api/resolve-matches.ts          # Vercel cron resolver
+|-- contracts/                      # Hardhat + FHEVM Solidity workspace
+|-- src/                            # React/TanStack frontend
+|-- src/lib/fhe.ts                  # Zama relayer SDK integration
+|-- src/lib/contracts-config.ts     # Sepolia deployment addresses
+|-- vercel.json                     # API deployment config
+|-- vercel.frontend.json            # frontend deployment config
+|-- README.md                       # project overview
+`-- doc.md                          # detailed project documentation
 ```
-
-## Repository Structure
-
-- `contracts/` — Solidity contracts, tests, deployment scripts.
-- `src/` — frontend UI (trade, pools, orders, activity, profile).
-- `api/resolve-matches.ts` — cron-triggered resolver endpoint.
-- `vercel.json` — API deployment configuration.
-- `vercel.frontend.json` — frontend-only deployment configuration.
-
-## Deployment Topology
-
-This repository is operated as two Vercel deployments:
-
-1. **API Project (`shadowpool-terminal`)**
-   - Hosts `/api/resolve-matches`
-   - Holds resolver credentials/secrets
-
-2. **Frontend Project (`shadowpool-frontend`)**
-   - Hosts UI only
-   - Does not require gateway private key for rendering
-
-## Environment Variables
-
-## API Project (required)
-
-- `CRON_SECRET`
-- `SEPOLIA_RPC_URL`
-- `GATEWAY_PRIVATE_KEY`
-- `GATEWAY_ADDRESS`
-- `MATCHER_ADDRESSES` (comma-separated)
-- Optional: `MATCHER_MAX_REQUESTS_PER_MATCHER`
-
-## Frontend Project
-
-- Frontend contract/network config values as needed.
-- No gateway private key required.
-
-## Cron Configuration
-
-Recommended schedule:
-
-- URL: `https://shadowpool-terminal.vercel.app/api/resolve-matches`
-- Method: `GET`
-- Header: `Authorization: Bearer <CRON_SECRET>`
-- Frequency: every minute (`* * * * *`)
 
 ## Local Development
 
-Install:
+Install frontend dependencies:
 
 ```bash
 npm install
 ```
 
-Run frontend dev:
+Run the frontend:
 
 ```bash
 npm run dev
 ```
 
-Contracts and scripts are managed from `contracts/` using the configured Hardhat workflow.
+Build the frontend:
 
-## Current Scope
+```bash
+npm run build
+```
 
-Blindspot currently includes:
+Run contracts:
 
-- confidential order submission,
-- pending request resolution pipeline with proof callback,
-- partial-fill execution model,
-- user-facing funding + decrypt + unwrap paths,
-- production-style split between UI and resolver API deployment.
+```bash
+cd contracts
+npm install
+npm run build
+npm test
+```
 
-## Reference Concepts
+## Resolver Deployment
 
-- Zama FHEVM protocol architecture and encrypted input model.
-- Ethereum MEV model and transaction-ordering risk context.
+The resolver is designed as a separate API deployment because it needs gateway credentials.
 
+Required API environment variables:
+
+- `CRON_SECRET`
+- `SEPOLIA_RPC_URL`
+- `GATEWAY_PRIVATE_KEY`
+- `GATEWAY_ADDRESS`
+- `MATCHER_ADDRESSES`
+- `MATCHER_MAX_REQUESTS_PER_MATCHER` optional
+
+Cron request:
+
+```text
+GET /api/resolve-matches
+Authorization: Bearer <CRON_SECRET>
+```
+
+Recommended cadence: every minute.
+
+## Current Network
+
+The checked-in frontend configuration targets Ethereum Sepolia and includes deployed pair addresses for:
+
+- WETH/USDC
+- WETH/LINK
+- LINK/USDC
+- DAI/USDC
+- WBTC/USDC
+- UNI/WETH
+
+## Roadmap
+
+- upgrade encrypted amount fields from `euint64` to `euint128` for larger institutional FX notional ranges,
+- add explicit FX pair metadata and corporate payment terminology in the UI,
+- support richer order types such as expiry and settlement windows,
+- improve resolver observability and retry accounting,
+- add invariant tests for queue rotation and multi-round partial fills,
+- document production custody, key, relayer, and compliance assumptions.
