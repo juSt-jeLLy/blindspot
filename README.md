@@ -2,6 +2,12 @@
 
 Blindspot is an FHE-powered dark pool DEX on Ethereum Sepolia where order price and size stay fully encrypted on-chain until matched. Built on the Zama Protocol, it uses ERC7984 confidential token wrappers and euint64 encrypted order types so neither traders nor validators can see order details — only the matching engine resolves trades using FHE operations, with settlement happening without ever exposing raw values.
 
+Confidential FX settlement and cross-border payment matching on FHEVM.
+
+Blindspot is an FHE-powered dark-pool rail for settling large FX-style orders without revealing trade size or limit price to the market before execution. A corporate, treasury desk, or liquidity provider submits encrypted order parameters; the matching engine compares encrypted bids and offers with TFHE/FHEVM operations, computes encrypted fill amounts and encrypted remainders, and settles through confidential ERC-20 wrappers.
+
+The core idea: public blockchains should verify settlement, not leak the order book.
+
 ## Problem Blindspot Solves
 
 Public DeFi execution leaks strategy-critical data before and during execution:
@@ -23,11 +29,35 @@ Blindspot is designed so sensitive execution values remain encrypted throughout 
 - Confidential trading balances held in `cToken` form.
 - User-owned confidential value reads, only via wallet-authorized decrypt flow.
 
-### Why this matters
+## Why This Matters
 
-- Reduces direct strategy leakage from public order values.
-- Limits intent visibility that typically enables predatory execution behavior.
-- Keeps settlement verifiable while protecting sensitive trading parameters.
+Cross-border payments and corporate FX execution often expose enough pre-trade information for liquidity providers, market makers, or intermediaries to infer intent and shade prices. Large visible order sizes can move the market before the trade is complete.
+
+Blindspot removes the most sensitive values from public view:
+
+- order size is encrypted,
+- target or limit rate is encrypted,
+- fill-size arithmetic happens under FHE,
+- partial-fill remainders are requeued without revealing the original or remaining amount,
+- settlement is verifiable while numeric trade intent stays confidential.
+
+## What Is Implemented
+
+The current codebase implements a working FHEVM dark-pool model on Ethereum Sepolia:
+
+- client-side encryption using `@zama-fhe/relayer-sdk`,
+- encrypted buy and sell order submission,
+- confidential ERC-20 wrapper funding,
+- FIFO queues per trading pair,
+- encrypted price comparison,
+- encrypted minimum-size selection,
+- encrypted remainder computation for partial fills,
+- proof-verified resolver callback using `FHE.checkSignatures`,
+- requeueing of partial-fill remainder orders,
+- frontend routes for trading, orders, pools, activity, and profile decrypt/unwrap flows,
+- Vercel API cron endpoint for resolving pending match requests.
+
+Today the Solidity contracts use `euint64` for encrypted price and size handles. The FX rail framing maps naturally to `encryptedRate` and `encryptedAmount`; moving amount fields to `euint128` is a clear extension path for larger institutional notional values.
 
 ## Frontend ↔ Contract Flow
 
